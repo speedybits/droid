@@ -5,14 +5,14 @@ import { ASK_CLAUDE, INSTRUCTIONS, b64, fetchToken, parseMessage } from "./commo
 // console for a close reason if the session fails to start.
 const HOST = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained";
 const DEFAULT_MODEL = "gemini-3.8-live";
-const VOICE = "Puck";
+export const VOICES = ["Puck", "Charon", "Kore", "Fenrir", "Aoede"];
 
 // Gemini's Schema type names are upper case.
 const upper = (s) => Array.isArray(s) ? s.map(upper)
   : s && typeof s === "object" ? Object.fromEntries(Object.entries(s).map(([k, v]) => [k, k === "type" ? String(v).toUpperCase() : upper(v)]))
   : s;
 
-export function createGemini(cb, { model = DEFAULT_MODEL } = {}) {
+export function createGemini(cb, { model = DEFAULT_MODEL, voice = VOICES[0] } = {}) {
   let ws;
   let resumeHandle = null;   // survives reconnects so ~10 min connection limits don't end the conversation
   let userBuf = "", modelBuf = "";
@@ -69,7 +69,7 @@ export function createGemini(cb, { model = DEFAULT_MODEL } = {}) {
           model: `models/${model}`,
           generationConfig: {
             responseModalities: ["AUDIO"],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: VOICE } } },
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
           },
           systemInstruction: { parts: [{ text: INSTRUCTIONS }] },
           tools: [{ functionDeclarations: [{ ...ASK_CLAUDE, parameters: upper(ASK_CLAUDE.parameters) }] }],

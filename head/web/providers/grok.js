@@ -3,7 +3,9 @@ import { ASK_CLAUDE, INSTRUCTIONS, b64, fetchToken, parseMessage } from "./commo
 const URL = "wss://api.x.ai/v1/realtime?model=grok-voice-latest";
 const RATE = 24000;
 
-export function createGrok(cb) {
+export const VOICES = ["eve", "ara", "rex", "sal", "leo"];
+
+export function createGrok(cb, { voice = "eve" } = {}) {
   let ws;
   const send = (o) => ws?.readyState === 1 && ws.send(JSON.stringify(o));
 
@@ -25,9 +27,13 @@ export function createGrok(cb) {
       case "response.function_call_arguments.done":
         cb.onToolCall({ callId: ev.call_id, name: ev.name, request: JSON.parse(ev.arguments).request });
         break;
-      case "error":
-        cb.onError(ev.error?.message || "grok error");
+      case "error": {
+        const msg = ev.error?.message || "grok error";
+        // STOP after generation finished: nothing to cancel, buffered audio is already flushed locally.
+        if (/no active response/i.test(msg)) break;
+        cb.onError(msg);
         break;
+      }
     }
   }
 
@@ -47,7 +53,7 @@ export function createGrok(cb) {
         type: "session.update",
         session: {
           instructions: INSTRUCTIONS,
-          voice: "eve",
+          voice,
           turn_detection: { type: "server_vad" },
           audio: {
             input: { format: { type: "audio/pcm", rate: RATE }, transcription: { model: "grok-transcribe" } },
@@ -65,6 +71,9 @@ export function createGrok(cb) {
       send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: text } });
       send({ type: "response.create" });
     },
+
+    // Stop generation server-side; flushing local playback alone lets in-flight deltas keep arriving.
+    interrupt: () => send({ type: "response.cancel" }),
 
     close: () => ws?.close(),
   };
