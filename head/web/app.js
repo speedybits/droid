@@ -14,6 +14,34 @@ let provider, head, ctx, analyser, nextPlay = 0, sources = [], micBuffer = [], o
 let wake, backoff = 500, pendingCalls = new Map(), stopFired = false, muted = false;
 let micStream, micNode, active = false;
 
+// ---------- cost estimate (voice is billed per minute; list prices, an estimate only) ----------
+const RATE_PER_MIN = { grok: 0.08, gemini: 0.02 };
+let sessionName, sessionSecs = 0, costTimer;
+const today = () => `cost.${new Date().toISOString().slice(0, 10)}`;
+const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+function renderCost() {
+  const rate = RATE_PER_MIN[sessionName] / 60;
+  const day = Number(store.get(today())) || 0;
+  $("cost").innerHTML = `${mmss(sessionSecs)} &middot; ~$${(sessionSecs * rate).toFixed(2)}<br>today ~$${(day + sessionSecs * rate).toFixed(2)}`;
+}
+
+function startCost(name) {
+  sessionName = name;
+  sessionSecs = 0;
+  $("cost").style.display = "block";
+  renderCost();
+  costTimer = setInterval(() => { if (open) { sessionSecs++; renderCost(); } }, 1000); // connected time only
+}
+
+function stopCost() {
+  clearInterval(costTimer);
+  const add = sessionSecs * (RATE_PER_MIN[sessionName] / 60);
+  store.set(today(), String((Number(store.get(today())) || 0) + add));
+  sessionSecs = 0;
+  $("cost").style.display = "none";
+}
+
 // ---------- audio out ----------
 function playChunk(b64) {
   if (muted) return; // late deltas from a response we cancelled
@@ -166,6 +194,7 @@ async function boot(name, voice) {
   $("stop").style.display = "block";
   caption("");
   active = true;
+  startCost(name);
   muted = stopFired = false;
   backoff = 500;
   const cb = {}; // providers call cb.* lazily, so fill it in once the provider exists
@@ -186,6 +215,7 @@ async function boot(name, voice) {
 // STOP button: halt the robot, then end the session and return to the selection screen.
 function endSession() {
   emergencyStop();
+  stopCost();
   active = false;
   open = false;
   micNode?.port && (micNode.port.onmessage = null);
@@ -224,3 +254,4 @@ document.querySelectorAll("[data-provider]").forEach((b) => (b.onclick = () => {
 const preselect = new URLSearchParams(location.search).get("provider");
 if (preselect in PROVIDERS) document.querySelector(`[data-provider=${preselect}]`).classList.add("preselected");
 $("stop").onclick = endSession;
+addEventListener("pagehide", () => { if (active) stopCost(); }); // closing the tab still counts toward today's total

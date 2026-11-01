@@ -21,6 +21,8 @@
   #start .row { display: flex; flex-direction: column; gap: 8px; align-items: center; }
   #start select { font-size: 16px; color: #9ef; background: #000; border: 1px solid #9ef; border-radius: 12px;
     padding: 8px 12px; min-width: 260px; }
+  #cost { position: fixed; top: calc(14px + env(safe-area-inset-top)); left: 12px; font-size: 13px; opacity: .6;
+    font-variant-numeric: tabular-nums; line-height: 1.4; pointer-events: none; display: none; }
   #stop { position: fixed; top: calc(12px + env(safe-area-inset-top)); right: 12px; padding: 10px 16px; font-size: 16px;
     border-radius: 20px; border: 2px solid #f55; background: rgba(0,0,0,.6); color: #f55; display: none; }
 </style>
@@ -28,6 +30,7 @@
 <body>
 <canvas id="face"></canvas>
 <div id="caption"></div>
+<div id="cost"></div>
 <button id="stop">STOP</button>
 <div id="start">
   <div class="row">
