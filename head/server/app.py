@@ -79,6 +79,13 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
         if app.state.agent is None:
             app.state.agent = ClaudeAgent(
                 AsyncAnthropic(), app.state.nimbus, os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5"))
+        # Warn about nimbus drift at startup; never block, since the robot may simply be off.
+        if hasattr(app.state.nimbus, "check"):
+            problems = await app.state.nimbus.check()
+            for p in problems:
+                log.warning("nimbus check: %s", p)
+            if not problems:
+                log.info("nimbus check: API compatible")
         yield
 
     app = FastAPI(title="droid head", lifespan=lifespan)

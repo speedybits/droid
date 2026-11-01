@@ -31,5 +31,8 @@ The start screen has **Wake with Grok** / **Wake with Gemini** buttons (`?provid
 - `head/claude_agent/` Claude tool loop + nimbus client
 - `mount/` (todo) OpenSCAD phone mount over the LIDAR turret
 
+Nimbus compatibility: on startup the head server checks nimbus's `/api/health` and `/openapi.json` and logs a
+warning for any missing `/api/claude/*` endpoint (it never blocks startup). Verified against the nimbus `neato` branch.
+
 Safety: "stop"/"halt" heard by Grok, the on-screen STOP button, and losing the phone connection all call
 nimbus `/api/claude/stop` directly without waiting on an LLM.
