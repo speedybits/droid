@@ -9,12 +9,40 @@
 //   sendToolResult(callId, name, text)
 //   close()
 // Callbacks: onOpen, onClose, onAudio(base64), onInterrupted(), onUserText(text, final),
-//            onModelText(text), onToolCall({ callId, name, request }), onError(msg)
+//            onModelText(text), onToolCall({ callId, name, request, fact }), onError(msg)
 
-export const INSTRUCTIONS = `You are Droid, a friendly little wheeled robot with a camera-less head and a LIDAR. Keep replies short and warm.
+let sid = "";
+export const newSession = () => (sid = crypto.randomUUID());
+export const sessionId = () => sid;
+
+export const BASE_INSTRUCTIONS = `You are Droid, a friendly little wheeled robot with a camera-less head and a LIDAR. Keep replies short and warm.
 You cannot move yourself. For ANY request to move, turn, go somewhere, look around, or describe surroundings, call the
 ask_claude function with the person's request in plain words, say one brief acknowledgement while you wait ("on it"),
-then speak the result you get back. Never claim to have moved until ask_claude returns. If the person says stop, say "stopping".`;
+then speak the result you get back. Never claim to have moved until ask_claude returns. If the person says stop, say "stopping".
+When the person tells you something worth remembering next time (their name, a preference, how the home is laid out),
+call the remember function with one short fact, then carry on naturally. Use what you remember naturally; don't recite it.`;
+
+// Base persona plus whatever the server remembers (facts, past conversations, this conversation if we reconnected).
+// Never blocks connecting: no memory is better than no robot.
+export async function buildInstructions() {
+  try {
+    const r = await fetch(`/memory/brief?sid=${encodeURIComponent(sid)}`);
+    const { brief } = await r.json();
+    return brief ? `${BASE_INSTRUCTIONS}\n\nWhat you remember:\n${brief}` : BASE_INSTRUCTIONS;
+  } catch {
+    return BASE_INSTRUCTIONS;
+  }
+}
+
+export const REMEMBER = {
+  name: "remember",
+  description: "Save one short, lasting fact (a name, preference or fact about the home) so you remember it in future conversations.",
+  parameters: {
+    type: "object",
+    properties: { fact: { type: "string", description: "One short fact, e.g. \"The person's name is Mike\"" } },
+    required: ["fact"],
+  },
+};
 
 export const ASK_CLAUDE = {
   name: "ask_claude",

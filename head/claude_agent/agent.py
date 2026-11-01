@@ -44,7 +44,8 @@ StatusCallback = Callable[[str], Awaitable[None]]
 
 
 class ClaudeAgent:
-    def __init__(self, anthropic_client, nimbus: NimbusClient, model: str):
+    def __init__(self, anthropic_client, nimbus: NimbusClient, model: str, memory=None):
+        self._memory = memory
         self._llm = anthropic_client
         self._nimbus = nimbus
         self._model = model
@@ -89,7 +90,9 @@ class ClaudeAgent:
 
     async def _loop(self, request, transcript, on_status):
         recent = "\n".join(f"{t['role']}: {t['text']}" for t in transcript[-12:])
-        messages = [{"role": "user", "content": f"Recent conversation:\n{recent}\n\nRequest: {request}"}]
+        known = self._memory.brief() if self._memory else ""
+        known = f"What you know about this home and its people:\n{known}\n\n" if known else ""
+        messages = [{"role": "user", "content": f"{known}Recent conversation:\n{recent}\n\nRequest: {request}"}]
         for _ in range(MAX_STEPS):
             resp = await self._llm.messages.create(
                 model=self._model, max_tokens=1024, system=SYSTEM, tools=TOOLS, messages=messages)

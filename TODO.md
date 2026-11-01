@@ -12,6 +12,7 @@ Jetson runs a detector and feeds short text descriptions to Claude / the voice m
 - [ ] Safety stays with the LIDAR emergency stop; the camera never gates it
 
 ## Other open items
+- [ ] Live-test memory on a real Grok session (tell it your name, STOP, start again, ask if it remembers); tune how it uses what it remembers
 - [ ] Add API keys to `.env` and test the voice flow on desktop Chrome, then iPhone (verify Grok token response shape and Gemini setup field names)
 - [ ] Idle timeout and session-minutes counter to limit voice billing
 - [ ] Gemini 2.5 native-audio model if the silent wait during `ask_claude` is a problem

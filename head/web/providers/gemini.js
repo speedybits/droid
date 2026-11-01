@@ -1,4 +1,4 @@
-import { ASK_CLAUDE, INSTRUCTIONS, b64, fetchToken, parseMessage } from "./common.js";
+import { ASK_CLAUDE, REMEMBER, b64, buildInstructions, fetchToken, parseMessage } from "./common.js";
 
 // Field names below follow the Live API's WebSocket protocol; the setup fields (voice, VAD,
 // transcription, compression, resumption) are not covered by the docs pages I read, so watch the
@@ -35,7 +35,7 @@ export function createGemini(cb, { model = DEFAULT_MODEL, voice = VOICES[0] } = 
     if (m.goAway) ws?.close(); // reconnect with the stored handle before the server drops us
     if (m.toolCall) {
       for (const f of m.toolCall.functionCalls || []) {
-        cb.onToolCall({ callId: f.id, name: f.name, request: f.args?.request ?? "" });
+        cb.onToolCall({ callId: f.id, name: f.name, ...f.args });
       }
     }
     const sc = m.serverContent;
@@ -59,7 +59,7 @@ export function createGemini(cb, { model = DEFAULT_MODEL, voice = VOICES[0] } = 
     ackSpeaksFirst: false, // 3.1 Flash Live only supports synchronous tool calls: the model waits for our result
 
     async connect() {
-      const token = await fetchToken("gemini");
+      const [token, instructions] = await Promise.all([fetchToken("gemini"), buildInstructions()]);
       ws = new WebSocket(`${HOST}?access_token=${encodeURIComponent(token)}`);
       ws.onmessage = async (e) => onMessage(await parseMessage(e.data));
       ws.onclose = (e) => { if (e.reason) console.warn("gemini closed:", e.code, e.reason); cb.onClose(); };
@@ -71,8 +71,8 @@ export function createGemini(cb, { model = DEFAULT_MODEL, voice = VOICES[0] } = 
             responseModalities: ["AUDIO"],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
           },
-          systemInstruction: { parts: [{ text: INSTRUCTIONS }] },
-          tools: [{ functionDeclarations: [{ ...ASK_CLAUDE, parameters: upper(ASK_CLAUDE.parameters) }] }],
+          systemInstruction: { parts: [{ text: instructions }] },
+          tools: [{ functionDeclarations: [ASK_CLAUDE, REMEMBER].map((t) => ({ ...t, parameters: upper(t.parameters) })) }],
           inputAudioTranscription: {},
           outputAudioTranscription: {},
           contextWindowCompression: { slidingWindow: {} },

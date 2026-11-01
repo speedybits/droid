@@ -1,6 +1,7 @@
 import { Face } from "./face.js";
 import { createGemini, VOICES as GEMINI_VOICES } from "./providers/gemini.js";
 import { createGrok, VOICES as GROK_VOICES } from "./providers/grok.js";
+import { newSession, sessionId } from "./providers/common.js";
 
 const STOP_WORDS = /\b(stop|halt|freeze|emergency)\b/i;
 const PROVIDERS = { grok: createGrok, gemini: createGemini };
@@ -88,7 +89,7 @@ function meter() {
 
 // ---------- head server link ----------
 function connectHead() {
-  const ws = (head = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/head`));
+  const ws = (head = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/head?sid=${sessionId()}`));
   ws.onmessage = async (e) => {
     const m = JSON.parse(e.data);
     if (m.type === "face") face.setState(m.state);
@@ -148,7 +149,12 @@ function callbacksFor(p) {
       }
     },
     onModelText: (text) => headSend({ type: "transcript", role: "voice", text }),
-    onToolCall({ callId, name, request }) {
+    onToolCall({ callId, name, request, fact }) {
+      if (name === "remember") {
+        headSend({ type: "remember", fact });
+        p.sendToolResult(callId, name, "saved");
+        return;
+      }
       if (name !== "ask_claude") return;
       const id = crypto.randomUUID();
       pendingCalls.set(id, { callId, name });
@@ -194,6 +200,7 @@ async function boot(name, voice) {
   $("stop").style.display = "block";
   caption("");
   active = true;
+  newSession(); // one id per tap on a start button; reconnects within it share the same conversation
   startCost(name);
   muted = stopFired = false;
   backoff = 500;
@@ -215,6 +222,7 @@ async function boot(name, voice) {
 // STOP button: halt the robot, then end the session and return to the selection screen.
 function endSession() {
   emergencyStop();
+  headSend({ type: "end" }); // lets the server fold this conversation into memory right away
   stopCost();
   active = false;
   open = false;
@@ -254,4 +262,4 @@ document.querySelectorAll("[data-provider]").forEach((b) => (b.onclick = () => {
 const preselect = new URLSearchParams(location.search).get("provider");
 if (preselect in PROVIDERS) document.querySelector(`[data-provider=${preselect}]`).classList.add("preselected");
 $("stop").onclick = endSession;
-addEventListener("pagehide", () => { if (active) stopCost(); }); // closing the tab still counts toward today's total
+addEventListener("pagehide", () => { if (active) { headSend({ type: "end" }); stopCost(); } }); // closing the tab still counts toward today's total

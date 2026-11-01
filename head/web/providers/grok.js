@@ -1,4 +1,4 @@
-import { ASK_CLAUDE, INSTRUCTIONS, b64, fetchToken, parseMessage } from "./common.js";
+import { ASK_CLAUDE, REMEMBER, b64, buildInstructions, fetchToken, parseMessage } from "./common.js";
 
 const URL = "wss://api.x.ai/v1/realtime?model=grok-voice-latest";
 const RATE = 24000;
@@ -25,7 +25,7 @@ export function createGrok(cb, { voice = "eve" } = {}) {
         if (ev.transcript?.trim()) cb.onModelText(ev.transcript);
         break;
       case "response.function_call_arguments.done":
-        cb.onToolCall({ callId: ev.call_id, name: ev.name, request: JSON.parse(ev.arguments).request });
+        cb.onToolCall({ callId: ev.call_id, name: ev.name, ...JSON.parse(ev.arguments) });
         break;
       case "error": {
         const msg = ev.error?.message || "grok error";
@@ -52,14 +52,14 @@ export function createGrok(cb, { voice = "eve" } = {}) {
       send({
         type: "session.update",
         session: {
-          instructions: INSTRUCTIONS,
+          instructions: await buildInstructions(),
           voice,
           turn_detection: { type: "server_vad" },
           audio: {
             input: { format: { type: "audio/pcm", rate: RATE }, transcription: { model: "grok-transcribe" } },
             output: { format: { type: "audio/pcm", rate: RATE } },
           },
-          tools: [{ type: "function", ...ASK_CLAUDE }],
+          tools: [ASK_CLAUDE, REMEMBER].map((t) => ({ type: "function", ...t })),
         },
       });
       cb.onOpen();

@@ -36,3 +36,14 @@ warning for any missing `/api/claude/*` endpoint (it never blocks startup). Veri
 
 Safety: "stop"/"halt" heard by Grok, the on-screen STOP button, and losing the phone connection all call
 nimbus `/api/claude/stop` directly without waiting on an LLM.
+
+## Memory
+The robot remembers across conversations. Everything lives as plain text under `data/` (or `$DROID_DATA`), gitignored:
+- `transcripts/YYYY-MM-DD.jsonl`: every utterance, both sides, the archive.
+- `memory.md`: durable facts (name, preferences, home layout), one bullet each; the voice model saves these with its
+  `remember` tool. Edit by hand to correct or forget something.
+- `summary.md`: rolling summary of past conversations, rewritten by Claude when a conversation ends (or 90 s after the
+  phone disconnects without ending it).
+
+Each time the voice model connects, the server hands it the facts, summary and (after a reconnect) the current
+conversation; Claude gets the same when it navigates. These files contain household speech: to wipe, delete `data/`.

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from head.claude_agent.agent import ClaudeAgent
 from head.claude_agent.nimbus_client import NimbusClient
+from head.server.memory import MemoryStore
 
 log = logging.getLogger("head")
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -68,17 +70,23 @@ def _load_dotenv(path: Path = Path(".env")) -> None:
             os.environ.setdefault(k.strip(), v.strip())
 
 
-def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = None) -> FastAPI:
-    """Factory so tests can inject a fake agent/nimbus."""
+SUMMARY_DELAY = 90.0  # a dropped head link may reconnect; only summarize once it has stayed gone
+
+
+def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = None,
+               memory: MemoryStore | None = None) -> FastAPI:
+    """Factory so tests can inject a fake agent/nimbus/memory."""
     _load_dotenv()
+    memory = memory or MemoryStore(Path(os.getenv("DROID_DATA", "data")))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if app.state.nimbus is None:
             app.state.nimbus = NimbusClient(os.getenv("NIMBUS_URL", "http://localhost:8080"))
         if app.state.agent is None:
+            app.state.llm = app.state.llm or AsyncAnthropic()
             app.state.agent = ClaudeAgent(
-                AsyncAnthropic(), app.state.nimbus, os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5"))
+                app.state.llm, app.state.nimbus, os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5"), memory)
         # Warn about nimbus drift at startup; never block, since the robot may simply be off.
         if hasattr(app.state.nimbus, "check"):
             problems = await app.state.nimbus.check()
@@ -91,7 +99,22 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
     app = FastAPI(title="droid head", lifespan=lifespan)
     app.state.agent = agent
     app.state.nimbus = nimbus
-    app.state.transcript = []  # [{"role": "user"|"voice"|"claude", "text": str}]
+    app.state.memory = memory
+    app.state.llm = None
+    app.state.model = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
+    app.state.pending_end = {}  # session id -> delayed summarize task
+    # [{"role": "user"|"voice"|"claude", "text": str}]; seeded from disk so a restart keeps context
+    app.state.transcript = memory.recent()
+
+    @app.get("/memory/brief")
+    async def memory_brief(sid: str = ""):
+        return {"brief": memory.brief(sid or None)}
+
+    async def summarize_later(sid: str, delay: float):
+        await asyncio.sleep(delay)
+        app.state.pending_end.pop(sid, None)
+        if app.state.llm is not None:
+            await memory.summarize(app.state.llm, app.state.model, sid)
 
     @app.post("/session")
     async def session(provider: str = "grok"):
@@ -110,8 +133,12 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
         return {"provider": provider, "token": token}
 
     @app.websocket("/ws/head")
-    async def head_ws(ws: WebSocket):
+    async def head_ws(ws: WebSocket, sid: str = ""):
         await ws.accept()
+        sid = sid or uuid.uuid4().hex
+        if (t := app.state.pending_end.pop(sid, None)):
+            t.cancel()  # same session reconnected after a blip
+        ended = False
         tasks: set[asyncio.Task] = set()
 
         async def send(msg: dict):
@@ -129,6 +156,7 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
                 log.exception("agent failed")
                 text = f"Sorry, something went wrong: {e}"
             app.state.transcript.append({"role": "claude", "text": text})
+            memory.log(sid, "claude", text)
             await send({"type": "claude_result", "id": req_id, "text": text})
             await send({"type": "face", "state": "idle"})
 
@@ -146,7 +174,13 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
                 kind = msg.get("type")
                 if kind == "transcript":
                     app.state.transcript.append({"role": msg["role"], "text": msg["text"]})
+                    memory.log(sid, msg["role"], msg["text"])
                     log.info("%s: %s", msg["role"], msg["text"])
+                elif kind == "remember":
+                    if memory.add_fact(str(msg.get("fact", ""))):
+                        log.info("remembered: %s", msg["fact"])
+                elif kind == "end":
+                    ended = True
                 elif kind == "ask_claude":
                     t = asyncio.create_task(run_request(msg["id"], msg["request"]))
                     tasks.add(t)
@@ -158,6 +192,9 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
         finally:
             # Watchdog: losing the phone means nobody is listening; stop the robot.
             await halt()
+            # An explicit end summarizes now; a bare disconnect waits in case the phone reconnects.
+            t = asyncio.create_task(summarize_later(sid, 0 if ended else SUMMARY_DELAY))
+            app.state.pending_end[sid] = t
 
     app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
     return app
