@@ -9,6 +9,8 @@ const VOICES = { grok: GROK_VOICES, gemini: GEMINI_VOICES };
 
 const $ = (id) => document.getElementById(id);
 const face = new Face($("face"));
+const preview = new URLSearchParams(location.search).get("face"); // ?face=<name> shows one expression
+if (preview) face.setEmotion(preview, 1e9);
 const caption = (t) => ($("caption").textContent = t);
 
 let provider, head, ctx, analyser, nextPlay = 0, sources = [], micBuffer = [], open = false;
@@ -41,6 +43,25 @@ function stopCost() {
   store.set(today(), String((Number(store.get(today())) || 0) + add));
   sessionSecs = 0;
   $("cost").style.display = "none";
+}
+
+// ---------- expressions: a cheap keyword read of what was said (no extra model round trip) ----------
+const MOODS = [
+  [/\b(love|adore|sweet|you're the best)\b/i, "love"],
+  [/\b(sorry|unfortunately|can't|cannot|couldn't|unable|sad|oh no)\b/i, "sad"],
+  [/\b(careful|watch out|blocked|stuck|obstacle|trouble|problem)\b/i, "nervous"],
+  [/\b(haha|ha ha|lol|hilarious)\b/i, "laugh"],
+  [/\b(wow|whoa|really|no way|amazing|surprise)\b/i, "surprised"],
+  [/\b(good ?night|sleep|tired|nap)\b/i, "sleepy"],
+  [/\b(haha|funny|joke|glad|great|thank|thanks|hello|hi there|hey|welcome|happy|nice|good)\b/i, "happy"],
+  [/\b(wink|just kidding|secret)\b/i, "wink"],
+  [/\b(obviously|of course|easy|told you)\b/i, "smug"],
+  [/\b(on it|going|heading|moving|let's go)\b/i, "determined"],
+  [/\b(hmm|wonder|what's that|how come|why)\b|\?\s*$/i, "curious"],
+];
+function express(text, ms) {
+  const hit = MOODS.find(([re]) => re.test(text));
+  if (hit) face.setEmotion(hit[1], ms);
 }
 
 // ---------- audio out ----------
@@ -114,6 +135,7 @@ function emergencyStop() {
   headSend({ type: "stop" });
   pendingCalls.clear();
   face.setState(open ? "listening" : "idle");
+  face.setEmotion("surprised", 1200);
   caption("Stopped");
 }
 
@@ -128,6 +150,7 @@ function callbacksFor(p) {
       micBuffer.forEach((b) => p.sendAudio(b));
       micBuffer = [];
       face.setState("listening");
+      face.setEmotion("happy", 2000); // greet
       caption("");
     },
     onClose() {
@@ -145,10 +168,11 @@ function callbacksFor(p) {
       if (final) {
         stopFired = false;
         caption(text);
+        express(text, 2500);
         headSend({ type: "transcript", role: "user", text });
       }
     },
-    onModelText: (text) => headSend({ type: "transcript", role: "voice", text }),
+    onModelText: (text) => { express(text, 4000); headSend({ type: "transcript", role: "voice", text }); },
     onToolCall({ callId, name, request, fact }) {
       if (name === "remember") {
         headSend({ type: "remember", fact });
@@ -161,7 +185,7 @@ function callbacksFor(p) {
       headSend({ type: "ask_claude", id, request });
       face.setState("thinking");
     },
-    onError: (msg) => { console.warn("voice error:", msg); caption(msg); },
+    onError: (msg) => { console.warn("voice error:", msg); face.setEmotion("dizzy", 2500); caption(msg); },
   };
 }
 
