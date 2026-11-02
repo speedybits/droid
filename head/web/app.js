@@ -4,6 +4,9 @@ import { createGrok, VOICES as GROK_VOICES } from "./providers/grok.js";
 import { newSession, sessionId } from "./providers/common.js";
 
 const STOP_WORDS = /\b(stop|halt|freeze|emergency)\b/i;
+const WAKE_WORD = /\b(hey|hay|hi|okay|ok)[, ]+(gadget|gadgit|gadjet|gadgets)\b/i;
+const SLEEP_WORDS = /\b(go to sleep|good ?night|sleep now)\b/i;
+const IDLE_SECS = Number(new URLSearchParams(location.search).get("sleep")) || 60; // quiet this long -> sleep
 const PROVIDERS = { grok: createGrok, gemini: createGemini };
 const VOICES = { grok: GROK_VOICES, gemini: GEMINI_VOICES };
 
@@ -16,6 +19,7 @@ const caption = (t) => ($("caption").textContent = t);
 let provider, head, ctx, analyser, nextPlay = 0, sources = [], micBuffer = [], open = false;
 let wake, backoff = 500, pendingCalls = new Map(), stopFired = false, muted = false;
 let micStream, micNode, active = false;
+let sleeping = false, lastActivity = 0, sleepAt = 0, idleTimer, rec;
 
 // ---------- cost estimate (voice is billed per minute; list prices, an estimate only) ----------
 const RATE_PER_MIN = { grok: 0.08, gemini: 0.02 };
@@ -103,9 +107,83 @@ function meter() {
   let sum = 0;
   for (const v of levelBuf) sum += (v - 128) ** 2;
   const rms = Math.sqrt(sum / levelBuf.length) / 128;
-  if (ctx.currentTime < nextPlay) { face.setState("speaking"); face.setLevel(rms * 4); }
+  if (ctx.currentTime < nextPlay) { touch(); face.setState("speaking"); face.setLevel(rms * 4); }
   else if (face.state === "speaking") face.setState(open ? "listening" : "idle");
   requestAnimationFrame(meter);
+}
+
+// ---------- sleep / wake ----------
+// Asleep = voice session closed (no billing), face shows Zzz, and only a local speech recogniser
+// listens for "Hey Gadget".
+const touch = () => (lastActivity = Date.now());
+
+function startIdleTimer() {
+  clearInterval(idleTimer);
+  idleTimer = setInterval(() => {
+    if (!active || sleeping || !open || pendingCalls.size || ctx.currentTime < nextPlay) return;
+    if (face.state === "moving" || face.state === "thinking") { touch(); return; } // robot is busy
+    if ((sleepAt && Date.now() > sleepAt) || Date.now() - lastActivity > IDLE_SECS * 1000) goToSleep();
+  }, 1000);
+}
+
+function goToSleep() {
+  sleeping = true; // set first: the close handlers below must not reconnect
+  sleepAt = 0;
+  open = false;
+  headSend({ type: "end" }); // fold the conversation into memory now
+  provider?.close();
+  head?.close();
+  micBuffer = [];
+  flushPlayback();
+  face.setState("sleeping");
+  caption('Say "Hey Gadget" to wake');
+  listenForWake();
+}
+
+function startAsleep() {
+  sleeping = true;
+  face.setState("sleeping");
+  caption('Say "Hey Gadget" to wake');
+  listenForWake();
+}
+
+function wakeUp() {
+  if (!sleeping || !active) return;
+  sleeping = false;
+  stopWake();
+  newSession(); // a fresh conversation; the head socket carries the id, so reconnect it too
+  muted = stopFired = false;
+  backoff = 500;
+  touch();
+  face.setState("idle");
+  face.setEmotion("surprised", 700);
+  caption("");
+  connectHead();
+  connectProvider(provider);
+}
+
+function listenForWake() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+  stopWake();
+  rec = new SR();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = "en-US";
+  rec.onresult = (e) => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (WAKE_WORD.test(e.results[i][0].transcript)) { wakeUp(); return; }
+    }
+  };
+  rec.onerror = (e) => { if (e.error === "not-allowed" || e.error === "service-not-allowed") { caption("Speech recognition is blocked, so I cannot hear the wake word"); rec = null; } };
+  rec.onend = () => { if (sleeping && active && rec) setTimeout(() => { try { rec.start(); } catch {} }, 300); }; // it times out on its own
+  try { rec.start(); } catch {}
+}
+
+function stopWake() {
+  const r = rec;
+  rec = null; // clear first so onend does not restart it
+  try { r?.abort(); } catch {}
 }
 
 // ---------- head server link ----------
@@ -113,7 +191,7 @@ function connectHead() {
   const ws = (head = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/head?sid=${sessionId()}`));
   ws.onmessage = async (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === "face") face.setState(m.state);
+    if (m.type === "face" && !sleeping) face.setState(m.state);
     if (m.type === "claude_status") caption(m.text);
     if (m.type === "claude_result") {
       const call = pendingCalls.get(m.id);
@@ -123,7 +201,7 @@ function connectHead() {
       if (active) provider.sendToolResult(call.callId, call.name, m.text);
     }
   };
-  ws.onclose = () => { if (active && head === ws) setTimeout(connectHead, 1000); };
+  ws.onclose = () => { if (active && !sleeping && head === ws) setTimeout(connectHead, 1000); };
 }
 const headSend = (o) => head?.readyState === 1 && head.send(JSON.stringify(o));
 
@@ -147,6 +225,7 @@ function callbacksFor(p) {
       if (!live()) return;
       backoff = 500;
       open = true;
+      touch();
       micBuffer.forEach((b) => p.sendAudio(b));
       micBuffer = [];
       face.setState("listening");
@@ -154,7 +233,7 @@ function callbacksFor(p) {
       caption("");
     },
     onClose() {
-      if (!live()) return;
+      if (!live() || sleeping) return;
       open = false;
       face.setState("idle");
       setTimeout(() => connectProvider(p), backoff);
@@ -164,9 +243,11 @@ function callbacksFor(p) {
     onInterrupted() { muted = false; flushPlayback(); }, // barge-in: the user is speaking, so unmute
     onUserText(text, final) {
       // React to "stop" on partials too; never wait on an LLM to stop the robot.
+      touch();
       if (!stopFired && STOP_WORDS.test(text)) { stopFired = true; emergencyStop(); }
       if (final) {
         stopFired = false;
+        if (SLEEP_WORDS.test(text)) sleepAt = Date.now() + 3000; // let the goodbye finish first
         caption(text);
         express(text, 2500);
         headSend({ type: "transcript", role: "user", text });
@@ -174,6 +255,7 @@ function callbacksFor(p) {
     },
     onModelText: (text) => { express(text, 4000); headSend({ type: "transcript", role: "voice", text }); },
     onToolCall({ callId, name, request, fact }) {
+      touch();
       if (name === "remember") {
         headSend({ type: "remember", fact });
         p.sendToolResult(callId, name, "saved");
@@ -211,7 +293,7 @@ async function startMic() {
   ctx.createMediaStreamSource(micStream).connect(micNode);
   micNode.port.onmessage = (e) => {
     if (open) provider.sendAudio(e.data);
-    else { micBuffer.push(e.data); if (micBuffer.length > 100) micBuffer.shift(); } // ~10 s cap
+    else if (!sleeping) { micBuffer.push(e.data); if (micBuffer.length > 100) micBuffer.shift(); } // ~10 s cap
   };
 }
 
@@ -226,8 +308,10 @@ async function boot(name, voice) {
   active = true;
   newSession(); // one id per tap on a start button; reconnects within it share the same conversation
   startCost(name);
-  muted = stopFired = false;
+  muted = stopFired = sleeping = false;
   backoff = 500;
+  touch();
+  startIdleTimer();
   const cb = {}; // providers call cb.* lazily, so fill it in once the provider exists
   const p = (provider = PROVIDERS[name](cb, { voice, model: new URLSearchParams(location.search).get("model") || undefined }));
   Object.assign(cb, callbacksFor(p));
@@ -238,13 +322,15 @@ async function boot(name, voice) {
   analyser.connect(ctx.destination);
   acquireWake();
   meter();
-  connectHead();
   try { await startMic(); } catch (err) { caption(`mic: ${err.message}`); return; }
-  if (active && provider === p) connectProvider(p);
+  if (active && provider === p) startAsleep(); // the tap above was only for audio permission; wait for "Hey Gadget"
 }
 
 // STOP button: halt the robot, then end the session and return to the selection screen.
 function endSession() {
+  clearInterval(idleTimer);
+  stopWake();
+  sleeping = false;
   emergencyStop();
   headSend({ type: "end" }); // lets the server fold this conversation into memory right away
   stopCost();

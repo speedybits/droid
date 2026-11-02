@@ -24,6 +24,7 @@ const EMOTIONS = {
   smug:       { eye: E({ h: 0.15, lid: 0.45 }), mouth: "smirk" },
   deadpan:    { eye: E({ kind: "dash" }), mouth: "flat" },
   sleepy:     { eye: E({ kind: "dome" }), mouth: "tiny" },
+  asleep:     { eye: E({ kind: "dome" }), mouth: "tiny" },
   dizzy:      { eye: E({ kind: "swirl", w: 0.14, h: 0.14 }), mouth: "wavy" },
   ko:         { eye: E({ kind: "x", w: 0.12, h: 0.12 }), mouth: "tiny" },
 };
@@ -35,7 +36,7 @@ const BROWS = {
   sad: { y: 0.08, t: -0.035 },        nervous: { y: 0.09, t: -0.028 },   angry: { y: 0.045, t: 0.045 },
   determined: { y: 0.06, t: 0.025 },  curious: { y: 0.065, t: 0.005, R: { y: 0.125, t: -0.012 } },
   surprised: { y: 0.14, t: -0.005 },  smug: { y: 0.06, t: 0.01, R: { y: 0.095, t: -0.005 } },
-  deadpan: { y: 0.07, t: 0 },         sleepy: { y: 0.05, t: -0.01 },     dizzy: { y: 0.09, t: -0.02 },
+  deadpan: { y: 0.07, t: 0 },         sleepy: { y: 0.05, t: -0.01 },     asleep: { y: 0.03, t: 0 },     dizzy: { y: 0.09, t: -0.02 },
   ko: { y: 0.08, t: 0 },
 };
 // Resting mouth shapes (w = width, c = how far the middle sags: + smile, - frown, k = right corner lift), in u.
@@ -44,8 +45,8 @@ const MOUTHS = {
   frown: { w: 0.36, c: -0.05, k: 0 }, smirk: { w: 0.4, c: 0.03, k: 0.035 },
 };
 // What the face shows when nothing more specific was asked for.
-const MOOD = { idle: "neutral", listening: "neutral", thinking: "curious", speaking: "neutral", moving: "determined" };
-const COLORS = { idle: "#8de", listening: "#8ee", thinking: "#fc6", speaking: "#9ef", moving: "#9df" };
+const MOOD = { idle: "neutral", listening: "neutral", thinking: "curious", speaking: "neutral", moving: "determined", sleeping: "asleep" };
+const COLORS = { idle: "#8de", listening: "#8ee", thinking: "#fc6", speaking: "#9ef", moving: "#9df", sleeping: "#58a" };
 
 export const EXPRESSIONS = Object.keys(EMOTIONS);
 
@@ -178,6 +179,57 @@ export class Face {
     }
   }
 
+  drawDream(bx, by, u, p, t) {
+    const { g } = this;
+    const fade = Math.min(1, Math.sin(p * Math.PI) * 3);
+    g.save();
+    g.shadowBlur = 0;
+    g.globalAlpha = fade * 0.55;
+    g.lineWidth = u * 0.008;
+    for (const [dx, dy, r] of [[0.1, 0.27, 0.012], [0.06, 0.2, 0.02]]) { // trail of little bubbles toward the eyes
+      g.beginPath(); g.arc(bx + dx * u, by + dy * u, r * u, 0, Math.PI * 2); g.stroke();
+    }
+    g.beginPath(); g.ellipse(bx, by, u * 0.2, u * 0.13, 0, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.ellipse(bx, by, u * 0.2, u * 0.13, 0, 0, Math.PI * 2); g.clip();
+    // sheep hops left to right through the bubble
+    const k = u * 0.011, hop = Math.abs(Math.sin(p * Math.PI * 6)) * 1.3;
+    g.translate(bx + (p - 0.5) * u * 0.28 - u * 0.02, by - u * 0.005 - hop * k);
+    g.globalAlpha = fade * 0.9;
+    const cream = "#fed", navy = "#5a6cc0";
+    const blob = (x, y, rx, ry, rot = 0) => { g.beginPath(); g.ellipse(x * k, y * k, rx * k, ry * k, rot, 0, Math.PI * 2); g.fill(); };
+    g.lineCap = "round";
+    g.strokeStyle = navy;                                    // long thin legs, trotting in pairs as it hops
+    g.lineWidth = k * 0.4;
+    for (const [lx, ph] of [[-2, 0], [-1.3, 1], [1.3, 0], [2, 1]]) {
+      g.beginPath(); g.moveTo(lx * k, 1 * k); g.lineTo(lx * k, (3.2 - (hop > 0.6 ? 0.6 * ph : 0.6 * (1 - ph))) * k); g.stroke();
+    }
+    g.fillStyle = cream;                                     // woolly body and a big fluffy tail
+    blob(0, 0, 2.9, 1.6);
+    for (const [x, y] of [[-2.6, -0.4], [-1.8, -1.4], [-0.6, -1.7], [0.7, -1.7], [1.9, -1.2], [-2.5, 0.8], [-1.5, 1.4], [0, 1.6], [1.4, 1.4]]) blob(x, y, 0.8, 0.8);
+    blob(-3.3, 0.3, 1.2, 1.4);
+    g.fillStyle = navy;                                      // ear sticking out, then the dark face
+    blob(2.1, -0.2, 1.2, 0.45, -0.35);
+    blob(3.3, 0.5, 1.2, 1.5, 0.15);
+    g.fillStyle = cream;                                     // wool tuft on top of the head
+    blob(2.7, -1.3, 0.7, 0.6); blob(3.4, -1.45, 0.6, 0.55); blob(2.2, -1.0, 0.5, 0.5);
+    g.fillStyle = "#fff";                                    // goggly eyes
+    blob(3.0, 0, 0.5, 0.5); blob(3.9, -0.05, 0.5, 0.5);
+    g.fillStyle = "#000";
+    blob(3.12, 0.02, 0.2, 0.2); blob(4.02, -0.03, 0.2, 0.2);
+    blob(4.2, 1.3, 0.3, 0.2);                                // nose
+    g.strokeStyle = cream;                                   // antenna with a spark on the end
+    g.lineWidth = k * 0.15;
+    g.beginPath(); g.moveTo(3.0 * k, -1.7 * k); g.lineTo(3.3 * k, -2.7 * k); g.stroke();
+    g.globalAlpha = fade * (0.5 + 0.5 * Math.sin(t * 12));
+    g.fillStyle = cream; blob(3.3, -2.8, 0.3, 0.3);
+    g.globalAlpha = fade * (0.6 + 0.4 * Math.sin(t * 14));   // lightning bolt on its side
+    g.fillStyle = navy;
+    g.beginPath();
+    g.moveTo(0.3 * k, -1.1 * k); g.lineTo(-0.6 * k, 0.2 * k); g.lineTo(0 * k, 0.2 * k); g.lineTo(-0.5 * k, 1.2 * k); g.lineTo(0.8 * k, -0.2 * k); g.lineTo(0.1 * k, -0.2 * k);
+    g.closePath(); g.fill();
+    g.restore();
+  }
+
   frame(now) {
     const { g, c } = this;
     const w = c.width, h = c.height, u = Math.min(w, h);
@@ -188,6 +240,9 @@ export class Face {
     // blinking (only visible on rect eyes)
     if (now > this.nextBlink) { this.blink = 1; this.nextBlink = now + 2000 + Math.random() * 3500; }
     this.blink = Math.max(0, this.blink - 0.12);
+
+    const asleep = this.state === "sleeping";
+    if (asleep) { this.gaze.tx = 0; this.gaze.ty = 0.5; this.gaze.next = now + 500; } // head down, still
 
     // gaze drift (look toward the side while "moving", up while thinking)
     if (now > this.gaze.next) {
@@ -251,7 +306,7 @@ export class Face {
     for (const s of [-1, 1]) {
       const spec = s === 1 && e.R ? { ...e.eye, ...e.R } : e.eye;
       const x = cx + s * ex + this.gaze.x * u * 0.05;
-      const y = ey + this.gaze.y * u * 0.05 + Math.sin(t * 1.3) * u * 0.004;
+      const y = ey + this.gaze.y * u * 0.05 + Math.sin(t * (asleep ? 0.6 : 1.3)) * u * (asleep ? 0.012 : 0.004); // slow breathing when asleep
       this.drawEye(x, y, s, spec, u, t);
     }
 
@@ -284,6 +339,31 @@ export class Face {
       g.bezierCurveTo(sx - u * 0.03, sy + u * 0.045, sx - u * 0.035, sy, sx, sy - u * 0.04);
       g.fill();
     }
+
+    // Zzz drifting up and to the side, three letters in staggered phases
+    if (asleep) {
+      g.shadowBlur = 0;
+      g.textAlign = "center";
+      for (let i = 0; i < 3; i++) {
+        const ph = ((t * 0.25 + i / 3) % 1);
+        g.globalAlpha = Math.sin(ph * Math.PI) * 0.8;
+        g.font = `bold ${u * (0.05 + 0.04 * ph)}px sans-serif`;
+        g.fillText("z", cx + ex * 1.3 + ph * u * 0.12, ey - u * 0.08 - ph * u * 0.22);
+      }
+      g.globalAlpha = 1;
+      g.shadowBlur = u * 0.04;
+    }
+
+    // Now and then it dreams of electric sheep: a thought bubble with a wired-up sheep hopping across
+    if (asleep) {
+      if (!this.nextDream) this.nextDream = now + 5000 + Math.random() * 6000;
+      if (!this.dreamAt && now > this.nextDream) this.dreamAt = now;
+      if (this.dreamAt) {
+        const p = (now - this.dreamAt) / 7000;
+        if (p >= 1) { this.dreamAt = 0; this.nextDream = now + 12000 + Math.random() * 18000; }
+        else this.drawDream(cx - u * 0.14, ey - u * 0.34, u, p, t);
+      }
+    } else this.dreamAt = 0;
 
     // mouth (follows the glance a little, as if the head turned)
     g.save();
