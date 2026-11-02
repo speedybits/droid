@@ -24,13 +24,26 @@ let sleeping = false, lastActivity = 0, sleepAt = 0, idleTimer, rec;
 // ---------- cost estimate (voice is billed per minute; list prices, an estimate only) ----------
 const RATE_PER_MIN = { grok: 0.08, gemini: 0.02 };
 let sessionName, sessionSecs = 0, costTimer;
-const today = () => `cost.${new Date().toISOString().slice(0, 10)}`;
+const today = () => `cost.${new Date().toLocaleDateString("en-CA")}`; // local date (en-CA is YYYY-MM-DD); UTC rolled over mid-evening
 const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+// Sum of every saved day in this calendar month (keys are cost.YYYY-MM-DD in local time).
+function monthTotal() {
+  const prefix = today().slice(0, "cost.YYYY-MM".length);
+  let sum = 0;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k.startsWith(prefix)) sum += Number(localStorage.getItem(k)) || 0;
+    }
+  } catch {}
+  return sum;
+}
 
 function renderCost() {
   const rate = RATE_PER_MIN[sessionName] / 60;
   const day = Number(store.get(today())) || 0;
-  $("cost").innerHTML = `${mmss(sessionSecs)} &middot; ~$${(sessionSecs * rate).toFixed(2)}<br>today ~$${(day + sessionSecs * rate).toFixed(2)}`;
+  $("cost").innerHTML = `${mmss(sessionSecs)} &middot; ~$${(sessionSecs * rate).toFixed(2)}<br>today ~$${(day + sessionSecs * rate).toFixed(2)}<br>month ~$${(monthTotal() + sessionSecs * rate).toFixed(2)}`;
 }
 
 function startCost(name) {
