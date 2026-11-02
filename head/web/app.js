@@ -1,7 +1,7 @@
-import { Face } from "./face.js?v=8";
+import { Face } from "./face.js?v=9";
 import { createGemini, VOICES as GEMINI_VOICES } from "./providers/gemini.js";
-import { createGrok, VOICES as GROK_VOICES } from "./providers/grok.js?v=8";
-import { MusicDetector } from "./music.js?v=8";
+import { createGrok, VOICES as GROK_VOICES } from "./providers/grok.js?v=9";
+import { MusicDetector } from "./music.js?v=9";
 import { newSession, sessionId } from "./providers/common.js";
 
 const STOP_WORDS = /\b(stop|halt|freeze|emergency)\b/i;
@@ -56,16 +56,17 @@ const MOODS = [
   [/\b(hmm|wonder|what's that|how come|why)\b|\?\s*$/i, "curious"],
 ];
 function express(text, ms) {
-  if (SERIOUS.test(text)) seriousUntil = Date.now() + 90000;
-  const grave = Date.now() < seriousUntil;
+  if (SERIOUS.test(text)) grave = true;
+  else if (LIGHT.test(text)) grave = false;
   const hit = MOODS.find(([re]) => re.test(text));
   if (hit && !grave) face.setEmotion(hit[1], ms);   // no gags while the topic is heavy
   feelTone(text);
 }
 
-// Heavy topics (politics, health, death, money trouble) get a serious face until ~90 s after the last mention.
-const SERIOUS = /\b(politic\w*|election|president|congress|senate|vote|voting|democrat\w*|republican\w*|trump|biden|government|war|immigration|abortion|gun|guns|health|doctor|hospital|surgery|cancer|diagnos\w+|symptoms?|medication|medicine|illness|disease|pain|therapy|depress\w+|anxiety|funeral|died|passed away|death|dying|divorce|lawsuit|bankrupt\w*)\b/i;
-let seriousUntil = 0;
+// Heavy topics (politics, health, death, money trouble) get a serious face that stays until a lighter topic comes along.
+const SERIOUS = /\b(serious\w*|something important|need to talk|have to talk|bad news|difficult|hard time|struggling|worried about|upset about|(want|need) to be (real|honest)|politic\w*|election|president|congress|senate|vote|voting|democrat\w*|republican\w*|trump|biden|government|war|immigration|abortion|gun|guns|health|doctor|hospital|surgery|cancer|diagnos\w+|symptoms?|medication|medicine|illness|disease|pain|therapy|depress\w+|anxiety|funeral|died|passed away|death|dying|divorce|lawsuit|bankrupt\w*)\b/i;
+const LIGHT = /\b(haha|ha ha|lol|hilarious|funny|joke|jokes|just kidding|wink|awesome|fun|yay|love|silly|cute|party|dance|dancing|game|play)\b/i;
+let grave = false;
 
 // Conversation tone: a running valence nudged by each utterance, fading back to neutral when the
 // talk goes quiet. The face rests on it between the brief per-sentence expressions above.
@@ -77,7 +78,7 @@ function feelTone(text) {
   applyTone();
 }
 function applyTone() {
-  face.setTone(Date.now() < seriousUntil ? "serious" : valence > 0.3 ? "happy" : valence < -0.5 ? "sad" : valence < -0.25 ? "nervous" : null);
+  face.setTone(grave ? "serious" : valence > 0.3 ? "happy" : valence < -0.5 ? "sad" : valence < -0.25 ? "nervous" : null);
 }
 setInterval(() => { valence *= 0.97; if (Math.abs(valence) < 0.05) valence = 0; applyTone(); }, 3000); // ~100 s half-life
 

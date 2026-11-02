@@ -251,7 +251,7 @@ export class Face {
     const t = (now - this.t0) / 1000;
     const dancing = this.state === "dancing";
     const name = this.emotion && now < this.emotionUntil ? this.emotion
-      : dancing ? DANCE[(this.beats >> 1) % DANCE.length] : (this.tone && TONED.has(this.state) ? this.tone : MOOD[this.state] || "neutral");
+      : dancing ? DANCE[(this.beats >> 1) % DANCE.length] : this.tone === "serious" && this.state === "thinking" ? "serious" : (this.tone && TONED.has(this.state) ? this.tone : MOOD[this.state] || "neutral");
     const e = EMOTIONS[name];
 
     // blinking (only visible on rect eyes)
@@ -414,8 +414,9 @@ export class Face {
         this.md = { w: (Math.random() - 0.5) * 0.14, c: (Math.random() - 0.35) * 0.05, k: (Math.random() - 0.5) * 0.03 };
         this.nextMouth = now + 1500 + Math.random() * 3000;
       }
-      const d = calm ? this.md : { w: 0, c: 0, k: 0 };
-      const want = { w: base.w + d.w, c: base.c + d.c + Math.sin(t * 1.6) * 0.006 + (this.state === "listening" ? 0.012 : 0), k: base.k + d.k };
+      const grave = name === "serious";   // no drifting or lifting toward a smile
+      const d = calm && !grave ? this.md : { w: 0, c: 0, k: 0 };
+      const want = { w: base.w + d.w, c: base.c + d.c + Math.sin(t * 1.6) * (grave ? 0.002 : 0.006) + (this.state === "listening" && !grave ? 0.012 : 0), k: base.k + d.k };
       for (const key of ["w", "c", "k"]) this.mp[key] += (want[key] - this.mp[key]) * 0.06;
       const { w: mw2, c, k } = this.mp, x0 = cx - mw2 * u / 2, x1 = cx + mw2 * u / 2;
       g.beginPath();

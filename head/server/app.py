@@ -73,6 +73,15 @@ def _load_dotenv(path: Path = Path(".env")) -> None:
 SUMMARY_DELAY = 90.0  # a dropped head link may reconnect; only summarize once it has stayed gone
 
 
+class NoCacheStatic(StaticFiles):
+    """Revalidate on every load so edits to the web app reach the phone (Safari caches module URLs hard)."""
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = None,
                memory: MemoryStore | None = None) -> FastAPI:
     """Factory so tests can inject a fake agent/nimbus/memory."""
@@ -196,7 +205,7 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
             t = asyncio.create_task(summarize_later(sid, 0 if ended else SUMMARY_DELAY))
             app.state.pending_end[sid] = t
 
-    app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+    app.mount("/", NoCacheStatic(directory=WEB_DIR, html=True), name="web")
     return app
 
 
