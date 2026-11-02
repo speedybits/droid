@@ -1,5 +1,5 @@
 // Animated face, modeled on the reference sheet: glowing rounded-rect eyes whose shape, size and
-// lids change with the mood, plus a small mouth. States: idle | listening | thinking | speaking | moving.
+// lids change with the mood, plus a small mouth. States: idle | listening | thinking | speaking | moving | sleeping | dancing.
 // Emotions are a separate layer: setEmotion("happy", 3000) shows one briefly, then the face falls
 // back to the mood of the current state. `mouth` (0..1) is driven by output-audio loudness.
 //
@@ -22,6 +22,7 @@ const EMOTIONS = {
   curious:    { eye: E({ w: 0.11, h: 0.13 }), R: { w: 0.14, h: 0.2 }, mouth: "tiny" },
   surprised:  { eye: E({ w: 0.15, h: 0.23 }), mouth: "o" },
   smug:       { eye: E({ h: 0.15, lid: 0.45 }), mouth: "smirk" },
+  serious:    { eye: E({ h: 0.15, lid: 0.18 }), mouth: "flat" },
   deadpan:    { eye: E({ kind: "dash" }), mouth: "flat" },
   sleepy:     { eye: E({ kind: "dome" }), mouth: "tiny" },
   asleep:     { eye: E({ kind: "dome" }), mouth: "tiny" },
@@ -36,7 +37,7 @@ const BROWS = {
   sad: { y: 0.08, t: -0.035 },        nervous: { y: 0.09, t: -0.028 },   angry: { y: 0.045, t: 0.045 },
   determined: { y: 0.06, t: 0.025 },  curious: { y: 0.065, t: 0.005, R: { y: 0.125, t: -0.012 } },
   surprised: { y: 0.14, t: -0.005 },  smug: { y: 0.06, t: 0.01, R: { y: 0.095, t: -0.005 } },
-  deadpan: { y: 0.07, t: 0 },         sleepy: { y: 0.05, t: -0.01 },     asleep: { y: 0.03, t: 0 },     dizzy: { y: 0.09, t: -0.02 },
+  deadpan: { y: 0.07, t: 0 },         serious: { y: 0.058, t: 0.018 },         sleepy: { y: 0.05, t: -0.01 },     asleep: { y: 0.03, t: 0 },     dizzy: { y: 0.09, t: -0.02 },
   ko: { y: 0.08, t: 0 },
 };
 // Resting mouth shapes (w = width, c = how far the middle sags: + smile, - frown, k = right corner lift), in u.
@@ -45,7 +46,10 @@ const MOUTHS = {
   frown: { w: 0.36, c: -0.05, k: 0 }, smirk: { w: 0.4, c: 0.03, k: 0.035 },
 };
 // What the face shows when nothing more specific was asked for.
-const MOOD = { idle: "neutral", listening: "neutral", thinking: "curious", speaking: "neutral", moving: "determined", sleeping: "asleep" };
+const MOOD = { idle: "neutral", listening: "neutral", thinking: "curious", speaking: "neutral", moving: "determined", sleeping: "asleep", dancing: "happy" };
+const TONED = new Set(["idle", "listening", "speaking"]);
+// While dancing the face cycles through these, one step every two beats.
+const DANCE = ["happy", "laugh", "happy", "wink", "happy", "love", "laugh", "happy"];
 const COLORS = { idle: "#8de", listening: "#8ee", thinking: "#fc6", speaking: "#9ef", moving: "#9df", sleeping: "#58a" };
 
 export const EXPRESSIONS = Object.keys(EMOTIONS);
@@ -65,6 +69,7 @@ export class Face {
     this.g = canvas.getContext("2d");
     this.state = "idle";
     this.emotion = null;     // transient override
+    this.tone = null;        // lingering conversation mood; replaces neutral for idle/listening/speaking
     this.emotionUntil = 0;
     this.mouth = 0;          // smoothed
     this.mouthTarget = 0;
@@ -76,6 +81,10 @@ export class Face {
     this.md = { w: 0, c: 0, k: 0 };        // idle drift of the mouth
     this.nextMouth = 0;
     this.bp = { L: { y: 0.075, t: 0 }, R: { y: 0.075, t: 0 } }; // current brows (smoothed)
+    this.pulse = 0;          // dance: jumps to ~1 on each beat, decays
+    this.beats = 0;
+    this.sway = 0;           // dance: smoothed left/right lean, flips each beat
+    this.lastBeat = 0;
     this.look = null;
     this.nextLook = performance.now() + 2500;
     this.t0 = performance.now();
@@ -92,6 +101,12 @@ export class Face {
   }
 
   setState(s) { this.state = s; }
+  beat(strength = 1) {
+    this.pulse = Math.max(this.pulse, 0.5 + 0.5 * strength);
+    this.beats++;
+    this.lastBeat = performance.now();
+  }
+  setTone(name) { this.tone = EMOTIONS[name] ? name : null; }
   setLevel(v) { this.mouthTarget = Math.min(1, v); }
   setEmotion(name, ms = 3500) {
     if (!EMOTIONS[name]) return;
@@ -234,7 +249,9 @@ export class Face {
     const { g, c } = this;
     const w = c.width, h = c.height, u = Math.min(w, h);
     const t = (now - this.t0) / 1000;
-    const name = this.emotion && now < this.emotionUntil ? this.emotion : MOOD[this.state] || "neutral";
+    const dancing = this.state === "dancing";
+    const name = this.emotion && now < this.emotionUntil ? this.emotion
+      : dancing ? DANCE[(this.beats >> 1) % DANCE.length] : (this.tone && TONED.has(this.state) ? this.tone : MOOD[this.state] || "neutral");
     const e = EMOTIONS[name];
 
     // blinking (only visible on rect eyes)
@@ -292,7 +309,21 @@ export class Face {
     g.fillStyle = "#000";
     g.fillRect(0, 0, w, h);
     const cx = w / 2, cy = h / 2;
-    const color = name === "love" ? "#f9b" : name === "sad" || name === "nervous" ? "#9cf" : COLORS[this.state] || "#8de";
+    // Dancing: the whole face bobs, leans to alternating sides on the beat and swells slightly. With
+    // no recent beat it keeps a gentle groove of its own.
+    g.save();
+    if (dancing) {
+      this.pulse *= 0.9;
+      const beating = now - this.lastBeat < 1200;
+      this.sway += ((beating ? (this.beats & 1 ? 1 : -1) : Math.sin(t * 2.5)) - this.sway) * 0.18;
+      const bob = beating ? this.pulse : 0.2 + 0.2 * Math.sin(t * 5);
+      g.translate(this.sway * u * 0.03, -bob * u * 0.04);
+      g.translate(cx, cy);
+      g.rotate(this.sway * 0.07);
+      g.scale(1 + this.pulse * 0.05, 1 + this.pulse * 0.05);
+      g.translate(-cx, -cy);
+    }
+    const color = dancing ? `hsl(${(t * 40 + this.beats * 25) % 360} 85% 72%)` : name === "love" ? "#f9b" : name === "sad" || name === "nervous" ? "#9cf" : COLORS[this.state] || "#8de";
     g.fillStyle = color;
     g.strokeStyle = color;
     g.shadowColor = color;
@@ -417,6 +448,7 @@ export class Face {
       }
     }
     g.restore();
+    g.restore(); // the dance transform
     g.shadowBlur = 0;
     requestAnimationFrame((n) => this.frame(n));
   }

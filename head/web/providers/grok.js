@@ -54,7 +54,7 @@ export function createGrok(cb, { voice = "eve" } = {}) {
         session: {
           instructions: await buildInstructions(),
           voice,
-          turn_detection: { type: "server_vad" },
+          turn_detection: { type: "server_vad", threshold: 0.5 },
           audio: {
             input: { format: { type: "audio/pcm", rate: RATE }, transcription: { model: "grok-transcribe" } },
             output: { format: { type: "audio/pcm", rate: RATE } },

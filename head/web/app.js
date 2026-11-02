@@ -1,6 +1,7 @@
-import { Face } from "./face.js";
+import { Face } from "./face.js?v=8";
 import { createGemini, VOICES as GEMINI_VOICES } from "./providers/gemini.js";
-import { createGrok, VOICES as GROK_VOICES } from "./providers/grok.js";
+import { createGrok, VOICES as GROK_VOICES } from "./providers/grok.js?v=8";
+import { MusicDetector } from "./music.js?v=8";
 import { newSession, sessionId } from "./providers/common.js";
 
 const STOP_WORDS = /\b(stop|halt|freeze|emergency)\b/i;
@@ -20,38 +21,17 @@ let provider, head, ctx, analyser, nextPlay = 0, sources = [], micBuffer = [], o
 let wake, backoff = 500, pendingCalls = new Map(), stopFired = false, muted = false;
 let micStream, micNode, active = false;
 let sleeping = false, lastActivity = 0, sleepAt = 0, idleTimer, rec;
+let dancing = false, detector; // music in the room: voice session closed (like sleep), face dances
 
 // ---------- cost estimate (voice is billed per minute; list prices, an estimate only) ----------
 const RATE_PER_MIN = { grok: 0.08, gemini: 0.02 };
 let sessionName, sessionSecs = 0, costTimer;
 const today = () => `cost.${new Date().toLocaleDateString("en-CA")}`; // local date (en-CA is YYYY-MM-DD); UTC rolled over mid-evening
-const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-
-// Sum of every saved day in this calendar month (keys are cost.YYYY-MM-DD in local time).
-function monthTotal() {
-  const prefix = today().slice(0, "cost.YYYY-MM".length);
-  let sum = 0;
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k.startsWith(prefix)) sum += Number(localStorage.getItem(k)) || 0;
-    }
-  } catch {}
-  return sum;
-}
-
-function renderCost() {
-  const rate = RATE_PER_MIN[sessionName] / 60;
-  const day = Number(store.get(today())) || 0;
-  $("cost").innerHTML = `${mmss(sessionSecs)} &middot; ~$${(sessionSecs * rate).toFixed(2)}<br>today ~$${(day + sessionSecs * rate).toFixed(2)}<br>month ~$${(monthTotal() + sessionSecs * rate).toFixed(2)}`;
-}
 
 function startCost(name) {
   sessionName = name;
   sessionSecs = 0;
-  $("cost").style.display = "block";
-  renderCost();
-  costTimer = setInterval(() => { if (open) { sessionSecs++; renderCost(); } }, 1000); // connected time only
+  costTimer = setInterval(() => { if (open) sessionSecs++; }, 1000); // connected time only
 }
 
 function stopCost() {
@@ -59,7 +39,6 @@ function stopCost() {
   const add = sessionSecs * (RATE_PER_MIN[sessionName] / 60);
   store.set(today(), String((Number(store.get(today())) || 0) + add));
   sessionSecs = 0;
-  $("cost").style.display = "none";
 }
 
 // ---------- expressions: a cheap keyword read of what was said (no extra model round trip) ----------
@@ -77,9 +56,30 @@ const MOODS = [
   [/\b(hmm|wonder|what's that|how come|why)\b|\?\s*$/i, "curious"],
 ];
 function express(text, ms) {
+  if (SERIOUS.test(text)) seriousUntil = Date.now() + 90000;
+  const grave = Date.now() < seriousUntil;
   const hit = MOODS.find(([re]) => re.test(text));
-  if (hit) face.setEmotion(hit[1], ms);
+  if (hit && !grave) face.setEmotion(hit[1], ms);   // no gags while the topic is heavy
+  feelTone(text);
 }
+
+// Heavy topics (politics, health, death, money trouble) get a serious face until ~90 s after the last mention.
+const SERIOUS = /\b(politic\w*|election|president|congress|senate|vote|voting|democrat\w*|republican\w*|trump|biden|government|war|immigration|abortion|gun|guns|health|doctor|hospital|surgery|cancer|diagnos\w+|symptoms?|medication|medicine|illness|disease|pain|therapy|depress\w+|anxiety|funeral|died|passed away|death|dying|divorce|lawsuit|bankrupt\w*)\b/i;
+let seriousUntil = 0;
+
+// Conversation tone: a running valence nudged by each utterance, fading back to neutral when the
+// talk goes quiet. The face rests on it between the brief per-sentence expressions above.
+const GOOD = /\b(love|great|awesome|amazing|thank(s| you)|wonderful|fun|happy|glad|nice|cool|yay|haha|lol|good job|well done|perfect|beautiful)\b/i;
+const BAD = /\b(sad|sorry|hate|terrible|awful|angry|annoying|upset|worried|scared|bad|stupid|wrong|broken|ugh|shut up|stop it|lonely|miss|hurts?|tired|bored)\b/i;
+let valence = 0;
+function feelTone(text) {
+  valence = Math.max(-1, Math.min(1, valence * 0.8 + (GOOD.test(text) ? 0.4 : 0) - (BAD.test(text) ? 0.45 : 0)));
+  applyTone();
+}
+function applyTone() {
+  face.setTone(Date.now() < seriousUntil ? "serious" : valence > 0.3 ? "happy" : valence < -0.5 ? "sad" : valence < -0.25 ? "nervous" : null);
+}
+setInterval(() => { valence *= 0.97; if (Math.abs(valence) < 0.05) valence = 0; applyTone(); }, 3000); // ~100 s half-life
 
 // ---------- audio out ----------
 function playChunk(b64) {
@@ -153,13 +153,6 @@ function goToSleep() {
   listenForWake();
 }
 
-function startAsleep() {
-  sleeping = true;
-  face.setState("sleeping");
-  caption('Say "Hey Gadget" to wake');
-  listenForWake();
-}
-
 function wakeUp() {
   if (!sleeping || !active) return;
   sleeping = false;
@@ -174,6 +167,42 @@ function wakeUp() {
   connectHead();
   connectProvider(provider);
 }
+
+// ---------- music: stop listening to the room and dance instead ----------
+// Dancing is sleep with a different face: the voice session is closed (no billing, no replies to
+// lyrics) and the wake-word recogniser is off, since it would only transcribe the song.
+function startDancing() {
+  if (!active || dancing) return;
+  if (!sleeping) goToSleep();
+  stopWake();
+  dancing = true;
+  face.setState("dancing");
+  caption("");
+}
+
+function stopDancing() {
+  if (!dancing) return;
+  dancing = false;
+  if (!active) return;
+  face.setState("sleeping");
+  caption('Say "Hey Gadget" to wake');
+  listenForWake();
+}
+
+// Tap the face to wake from sleep. While dancing this doubles as the escape hatch for a false
+// positive (no re-trigger for 2 min).
+$("face").addEventListener("click", () => {
+  if (!sleeping) return;
+  if (dancing) {
+    detector?.hold(120000);
+    stopDancing();
+  }
+  wakeUp();
+});
+
+const MUSIC = new URLSearchParams(location.search).has("music"); // music mode is opt-in: add ?music=1
+const dbg = MUSIC ? $("dbg") : null; // ...and it shows the classifier
+if (dbg) dbg.style.display = "block";
 
 function listenForWake() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -303,7 +332,14 @@ async function startMic() {
   });
   await ctx.audioWorklet.addModule("audio-worklet.js");
   micNode = new AudioWorkletNode(ctx, "pcm-capture", { processorOptions: { targetRate: provider.inRate } });
-  ctx.createMediaStreamSource(micStream).connect(micNode);
+  const src = ctx.createMediaStreamSource(micStream);
+  src.connect(micNode);
+  if (MUSIC) detector = new MusicDetector(ctx, src, {
+    suppress: () => ctx.currentTime < nextPlay || pendingCalls.size > 0, // our own voice is not music
+    onBeat: (s) => dancing && face.beat(s),
+    onChange: (music) => (music ? startDancing() : stopDancing()),
+    onDebug: dbg && ((d) => (dbg.textContent = `${d.db.toFixed(0)} dB  beat ${d.beat.toFixed(2)}  gaps ${d.gaps.toFixed(2)}  cv ${d.cv.toFixed(2)}\nscore ${d.ema.toFixed(2)}  ${d.music ? "MUSIC" : "-"}\nv5 ${dancing ? "dancing" : sleeping ? "asleep" : open ? "listening" : "connecting"}`)),
+  });
   micNode.port.onmessage = (e) => {
     if (open) provider.sendAudio(e.data);
     else if (!sleeping) { micBuffer.push(e.data); if (micBuffer.length > 100) micBuffer.shift(); } // ~10 s cap
@@ -321,7 +357,7 @@ async function boot(name, voice) {
   active = true;
   newSession(); // one id per tap on a start button; reconnects within it share the same conversation
   startCost(name);
-  muted = stopFired = sleeping = false;
+  muted = stopFired = sleeping = dancing = false;
   backoff = 500;
   touch();
   startIdleTimer();
@@ -335,14 +371,18 @@ async function boot(name, voice) {
   analyser.connect(ctx.destination);
   acquireWake();
   meter();
+  connectHead();
   try { await startMic(); } catch (err) { caption(`mic: ${err.message}`); return; }
-  if (active && provider === p) startAsleep(); // the tap above was only for audio permission; wait for "Hey Gadget"
+  if (active && provider === p) connectProvider(p);
 }
 
 // STOP button: halt the robot, then end the session and return to the selection screen.
 function endSession() {
   clearInterval(idleTimer);
   stopWake();
+  detector?.stop();
+  detector = null;
+  dancing = false;
   sleeping = false;
   emergencyStop();
   headSend({ type: "end" }); // lets the server fold this conversation into memory right away
