@@ -4,7 +4,7 @@ from head.server.app import create_app
 
 
 class FakeAgent:
-    async def handle(self, request, transcript, on_status):
+    async def handle(self, request, transcript, on_status, on_turn=None):
         await on_status("working")
         return f"did: {request}"
 

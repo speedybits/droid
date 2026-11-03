@@ -75,7 +75,7 @@ async def test_summarize_failure_keeps_old_summary_and_allows_retry(tmp_path):
 
 
 class FakeAgent:
-    async def handle(self, request, transcript, on_status):
+    async def handle(self, request, transcript, on_status, on_turn=None):
         return "done"
 
 

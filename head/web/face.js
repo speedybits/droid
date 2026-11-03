@@ -101,6 +101,7 @@ export class Face {
   }
 
   setState(s) { this.state = s; }
+  turning(dir) { this.turnDir = dir; } // screen direction: -1 left, 1 right, 0 off: eyes lead the robot's turn
   beat(strength = 1) {
     this.pulse = Math.max(this.pulse, 0.5 + 0.5 * strength);
     this.beats++;
@@ -289,6 +290,7 @@ export class Face {
     } else if (this.look) {
       this.look = null;
     }
+    if (this.turnDir && !asleep) { this.gaze.tx = this.turnDir * 2.2; this.gaze.ty = 0; this.gaze.next = now + 300; this.look = null; }
     // Eyes snap to a target like real saccades (a quick spring with a hint of overshoot), then hold
     // with tiny involuntary jitter. Big shifts often come with a blink.
     const gz = this.gaze;

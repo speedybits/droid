@@ -28,10 +28,31 @@ const RATE_PER_MIN = { grok: 0.08, gemini: 0.02 };
 let sessionName, sessionSecs = 0, costTimer;
 const today = () => `cost.${new Date().toLocaleDateString("en-CA")}`; // local date (en-CA is YYYY-MM-DD); UTC rolled over mid-evening
 
+// ---------- usage spark charts: per-minute buckets over the last 30 min ----------
+const BUCKETS = 30;
+const usage = { claude: new Array(BUCKETS).fill(0), gemini: new Array(BUCKETS).fill(0) };
+let usageMin = Math.floor(Date.now() / 60000);
+function bump(name, n) {
+  const now = Math.floor(Date.now() / 60000);
+  for (; usageMin < now; usageMin++) for (const k in usage) { usage[k].push(0); usage[k].shift(); }
+  usage[name][BUCKETS - 1] += n;
+  drawUsage();
+}
+function drawUsage() {
+  const fmt = { claude: (v) => `${v >= 1000 ? (v / 1000).toFixed(1) + "k" : v} tok`, gemini: (v) => `${(v / 60).toFixed(1)} min` };
+  for (const k in usage) {
+    const d = usage[k], max = Math.max(...d, 1);
+    $(`sp-${k}`).firstChild.setAttribute("points", d.map((v, i) => `${(i * 90 / (BUCKETS - 1)).toFixed(1)},${(21 - v / max * 20).toFixed(1)}`).join(" "));
+    $(`u-${k}`).textContent = `${k === "claude" ? "Claude" : "Gemini"} ${fmt[k](d.reduce((a, b) => a + b, 0))}`;
+  }
+}
+drawUsage();
+setInterval(() => bump("claude", 0), 60000); // keep the window sliding while idle
+
 function startCost(name) {
   sessionName = name;
   sessionSecs = 0;
-  costTimer = setInterval(() => { if (open) sessionSecs++; }, 1000); // connected time only
+  costTimer = setInterval(() => { if (open) { sessionSecs++; if (name === "gemini") bump("gemini", 1); } }, 1000); // connected time only
 }
 
 function stopCost() {
@@ -236,6 +257,8 @@ function connectHead() {
     const m = JSON.parse(e.data);
     if (m.type === "face" && !sleeping) face.setState(m.state);
     if (m.type === "claude_status") caption(m.text);
+    if (m.type === "turn") { face.turning(m.dir); return; }
+    if (m.type === "usage") { bump("claude", m.claude_tokens); return; }
     if (m.type === "claude_result") {
       const call = pendingCalls.get(m.id);
       if (!call) return;
@@ -291,7 +314,6 @@ function callbacksFor(p) {
       if (final) {
         stopFired = false;
         if (SLEEP_WORDS.test(text)) sleepAt = Date.now() + 3000; // let the goodbye finish first
-        caption(text);
         express(text, 2500);
         headSend({ type: "transcript", role: "user", text });
       }

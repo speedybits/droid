@@ -47,15 +47,23 @@ class ClaudeAgent:
     def __init__(self, anthropic_client, nimbus: NimbusClient, model: str, memory=None):
         self._memory = memory
         self._llm = anthropic_client
+        self.tokens = 0  # cumulative input+output tokens, for the head's usage chart
         self._nimbus = nimbus
         self._model = model
 
-    async def _run_tool(self, name: str, args: dict, on_status: StatusCallback):
+    async def _run_tool(self, name: str, args: dict, on_status: StatusCallback, on_turn=None):
         if name == "move":
             d = max(-MAX_MOVE_M, min(MAX_MOVE_M, float(args["distance"])))
             return await self._nimbus.move(d)
         if name == "turn":
-            return await self._nimbus.turn(float(args["degrees"]))
+            deg = float(args["degrees"])
+            if on_turn:
+                await on_turn(-1 if deg < 0 else 1)  # positive degrees = left; screen-right is the robot's left (viewer faces the robot)
+            try:
+                return await self._nimbus.turn(deg)
+            finally:
+                if on_turn:
+                    await on_turn(0)
         if name == "goto":
             return await self._nimbus.goto(float(args["x"]), float(args["y"]))
         if name == "scan":
@@ -71,10 +79,10 @@ class ClaudeAgent:
             return {"ok": True}
         raise ValueError(f"unknown tool {name}")
 
-    async def handle(self, request: str, transcript: list[dict], on_status: StatusCallback) -> str:
+    async def handle(self, request: str, transcript: list[dict], on_status: StatusCallback, on_turn=None) -> str:
         """Run one request to completion; returns the sentence(s) for the voice assistant to speak."""
         try:
-            return await asyncio.wait_for(self._loop(request, transcript, on_status), MAX_SECONDS)
+            return await asyncio.wait_for(self._loop(request, transcript, on_status, on_turn), MAX_SECONDS)
         except asyncio.TimeoutError:
             await self._safe_stop()
             return "I ran out of time on that, so I stopped."
@@ -88,7 +96,7 @@ class ClaudeAgent:
         except Exception:
             pass
 
-    async def _loop(self, request, transcript, on_status):
+    async def _loop(self, request, transcript, on_status, on_turn=None):
         recent = "\n".join(f"{t['role']}: {t['text']}" for t in transcript[-12:])
         known = self._memory.brief() if self._memory else ""
         known = f"What you know about this home and its people:\n{known}\n\n" if known else ""
@@ -96,6 +104,8 @@ class ClaudeAgent:
         for _ in range(MAX_STEPS):
             resp = await self._llm.messages.create(
                 model=self._model, max_tokens=1024, system=SYSTEM, tools=TOOLS, messages=messages)
+            u = getattr(resp, "usage", None)
+            self.tokens += (getattr(u, "input_tokens", 0) or 0) + (getattr(u, "output_tokens", 0) or 0)
             messages.append({"role": "assistant", "content": resp.content})
             calls = [b for b in resp.content if b.type == "tool_use"]
             if not calls:
@@ -103,7 +113,7 @@ class ClaudeAgent:
             results = []
             for call in calls:
                 try:
-                    out = await self._run_tool(call.name, call.input, on_status)
+                    out = await self._run_tool(call.name, call.input, on_status, on_turn)
                     results.append({"type": "tool_result", "tool_use_id": call.id, "content": json.dumps(out)})
                 except Exception as e:  # report to Claude so it can recover or explain
                     results.append({"type": "tool_result", "tool_use_id": call.id,

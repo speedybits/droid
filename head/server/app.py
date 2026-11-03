@@ -156,9 +156,12 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
         async def run_request(req_id: str, request: str):
             async def on_status(text: str):
                 await send({"type": "claude_status", "id": req_id, "text": text})
+            async def on_turn(d: int):
+                await send({"type": "turn", "dir": d})
             await send({"type": "face", "state": "thinking"})
+            before = getattr(app.state.agent, "tokens", 0)
             try:
-                text = await app.state.agent.handle(request, app.state.transcript, on_status)
+                text = await app.state.agent.handle(request, app.state.transcript, on_status, on_turn)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -166,6 +169,7 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
                 text = f"Sorry, something went wrong: {e}"
             app.state.transcript.append({"role": "claude", "text": text})
             memory.log(sid, "claude", text)
+            await send({"type": "usage", "claude_tokens": getattr(app.state.agent, "tokens", 0) - before})
             await send({"type": "claude_result", "id": req_id, "text": text})
             await send({"type": "face", "state": "idle"})
 
