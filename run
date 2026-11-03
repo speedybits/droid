@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Launcher for droid. `./run` shows a menu; or pass a mode: sim | robot | head | status | stop
+#
+#   sim    nimbus simulator (virtual room) + head server, opens the room view and the head in separate windows
+#   robot  head server only, talking to the real robot's nimbus (NIMBUS_URL from .env, default the Jetson)
+#   head   head server only, using whatever NIMBUS_URL / .env says (no nimbus started)
+#
+# Env overrides: NIMBUS_DIR (default ~/projects/nimbus), MAP (four_rooms|simple_maze|empty_room),
+#                HEAD_PORT (8443), NIMBUS_PORT (8080), NO_BROWSER=1
+set -uo pipefail
+
+DROID_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NIMBUS_DIR="${NIMBUS_DIR:-$HOME/projects/nimbus}"
+HEAD_PORT="${HEAD_PORT:-8443}"
+NIMBUS_PORT="${NIMBUS_PORT:-8080}"
+RUN_DIR="$DROID_DIR/.run"
+mkdir -p "$RUN_DIR"
+
+say() { printf '\033[1;36m==>\033[0m %s\n' "$*" >&2; }
+die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; stop_all 2>/dev/null; exit 1; }
+
+port_pid() { ss -ltnpH "sport = :$1" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2; }
+
+wait_http() { # url, seconds
+  for _ in $(seq 1 $(($2 * 4))); do curl -sf -o /dev/null "$1" && return 0; sleep 0.25; done
+  return 1
+}
+
+stop_all() {
+  local f pid
+  for f in "$RUN_DIR"/*.pid; do
+    [ -e "$f" ] || continue
+    pid=$(cat "$f"); kill "$pid" 2>/dev/null && say "stopped $(basename "$f" .pid) (pid $pid)"
+    rm -f "$f"
+  done
+}
+
+status() {
+  local p
+  for pair in "nimbus:$NIMBUS_PORT" "head:$HEAD_PORT"; do
+    p=$(port_pid "${pair#*:}")
+    printf '%-7s :%-5s %s\n' "${pair%%:*}" "${pair#*:}" "$([ -n "$p" ] && echo "running (pid $p)" || echo down)"
+  done
+}
+
+# Refuse to start on a busy port; offer to free it only if we started it.
+ensure_free() { # name port
+  local pid; pid=$(port_pid "$2"); [ -z "$pid" ] && return 0
+  if [ -e "$RUN_DIR/$1.pid" ] && [ "$(cat "$RUN_DIR/$1.pid")" = "$pid" ]; then
+    say "$1 already running from a previous ./run (pid $pid), restarting it"
+    kill "$pid"; rm -f "$RUN_DIR/$1.pid"; sleep 1; return 0
+  fi
+  die "port $2 is in use by pid $pid ($(ps -o comm= -p "$pid")), not started by ./run. Stop it yourself first."
+}
+
+nimbus_bin() {
+  local bin="$NIMBUS_DIR/.venv/bin/nimbus"
+  if [ ! -x "$bin" ]; then
+    [ -d "$NIMBUS_DIR" ] || die "nimbus repo not found at $NIMBUS_DIR (set NIMBUS_DIR)"
+    command -v uv >/dev/null || die "uv not found; needed once to build $NIMBUS_DIR/.venv"
+    say "first run: creating $NIMBUS_DIR/.venv"
+    (cd "$NIMBUS_DIR" && uv venv .venv >/dev/null && uv pip install -q -e . ) || die "nimbus venv setup failed"
+  fi
+  echo "$bin"
+}
+
+head_bin() {
+  [ -x "$DROID_DIR/.venv/bin/uvicorn" ] || die "droid venv missing: run  uv venv && uv pip install -e '.[dev]'"
+  echo "$DROID_DIR/.venv/bin/uvicorn"
+}
+
+start_nimbus_sim() {
+  local map="${MAP:-four_rooms}" bin
+  bin=$(nimbus_bin) || exit 1
+  ensure_free nimbus "$NIMBUS_PORT"
+  say "starting nimbus sim (map: $map)"
+  (cd "$NIMBUS_DIR" && exec "$bin" run --sim --transport neato --map-template "$map") >"$RUN_DIR/nimbus.log" 2>&1 &
+  echo $! >"$RUN_DIR/nimbus.pid"
+  wait_http "http://localhost:$NIMBUS_PORT/api/health" 20 || die "nimbus didn't come up; see $RUN_DIR/nimbus.log"
+}
+
+start_head() { # [nimbus_url_override]
+  local bin; bin=$(head_bin) || exit 1
+  ensure_free head "$HEAD_PORT"
+  say "starting head server on :$HEAD_PORT"
+  (cd "$DROID_DIR" && exec env ${1:+NIMBUS_URL="$1"} "$bin" head.server.app:app --host 127.0.0.1 --port "$HEAD_PORT") >"$RUN_DIR/head.log" 2>&1 &
+  echo $! >"$RUN_DIR/head.pid"
+  wait_http "http://localhost:$HEAD_PORT/" 15 || die "head didn't come up; see $RUN_DIR/head.log"
+}
+
+open_window() { # url — a separate browser window, not a tab
+  [ -n "${NO_BROWSER:-}" ] && return
+  if command -v google-chrome-stable >/dev/null; then
+    google-chrome-stable --new-window "$1" >/dev/null 2>&1 &
+  else
+    xdg-open "$1" >/dev/null 2>&1 &
+  fi
+  sleep 1
+}
+
+wait_and_cleanup() {
+  say "running. Logs in $RUN_DIR/. Ctrl+C stops everything ./run started."
+  trap 'echo; stop_all; exit 0' INT TERM
+  while :; do
+    for f in "$RUN_DIR"/*.pid; do
+      [ -e "$f" ] || continue
+      kill -0 "$(cat "$f")" 2>/dev/null || { say "$(basename "$f" .pid) exited; see $RUN_DIR/$(basename "$f" .pid).log"; stop_all; exit 1; }
+    done
+    sleep 2
+  done
+}
+
+mode_sim() {
+  start_nimbus_sim
+  start_head "http://localhost:$NIMBUS_PORT"
+  say "room view: http://localhost:$NIMBUS_PORT/sim"
+  say "head:      http://localhost:$HEAD_PORT/   (tap the face to wake)"
+  open_window "http://localhost:$NIMBUS_PORT/sim"
+  open_window "http://localhost:$HEAD_PORT/"
+  wait_and_cleanup
+}
+
+mode_robot() {
+  start_head
+  say "head: http://localhost:$HEAD_PORT/  (robot at NIMBUS_URL from .env)"
+  open_window "http://localhost:$HEAD_PORT/"
+  wait_and_cleanup
+}
+
+menu() {
+  echo "What do you want to run?"
+  echo "  1) Simulator   virtual room + head (two windows)"
+  echo "  2) Real robot  head only, nimbus on the Jetson"
+  echo "  3) Status"
+  echo "  4) Stop everything ./run started"
+  read -rp "> " c
+  case "$c" in
+    1) read -rp "Map [four_rooms/simple_maze/empty_room] (enter = four_rooms): " m; MAP="${m:-${MAP:-}}"; export MAP; mode_sim ;;
+    2) mode_robot ;;
+    3) status ;;
+    4) stop_all ;;
+    *) die "pick 1-4" ;;
+  esac
+}
+
+case "${1:-}" in
+  "")     menu ;;
+  sim)    mode_sim ;;
+  robot|head) mode_robot ;;
+  status) status ;;
+  stop)   stop_all ;;
+  *)      sed -n '2,10p' "$0"; exit 2 ;;
+esac
