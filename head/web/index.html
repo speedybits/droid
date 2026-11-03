@@ -21,8 +21,8 @@
   #start .row { display: flex; flex-direction: column; gap: 8px; align-items: center; }
   #start select { font-size: 16px; color: #9ef; background: #000; border: 1px solid #9ef; border-radius: 12px;
     padding: 8px 12px; min-width: 260px; }
-  #usage { position: fixed; left: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); display: flex; flex-direction: column;
-    gap: 6px; font: 11px ui-monospace, monospace; opacity: .7; pointer-events: none; }
+  #usage { position: fixed; left: 12px; top: calc(12px + env(safe-area-inset-top)); display: flex; flex-direction: column;
+    gap: 6px; font: 11px ui-monospace, monospace; opacity: .7; pointer-events: none; transition: opacity .6s; }
   #usage div { display: flex; align-items: center; gap: 6px; }
   #usage svg { width: 90px; height: 22px; }
   #usage polyline { fill: none; stroke: #9ef; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
@@ -49,6 +49,6 @@
     <select data-voice="gemini" aria-label="Gemini voice"></select>
   </div>
 </div>
-<script type="module" src="app.js?v=11"></script>
+<script type="module" src="app.js?v=13"></script>
 </body>
 </html>

@@ -47,6 +47,7 @@ function drawUsage() {
   }
 }
 drawUsage();
+setInterval(() => ($("usage").style.opacity = face.state === "sleeping" ? 0 : ""), 300); // clear the corner for the electric sheep
 setInterval(() => bump("claude", 0), 60000); // keep the window sliding while idle
 
 function startCost(name) {
