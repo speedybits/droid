@@ -261,18 +261,18 @@ async def test_approach_spot_is_within_earshot_of_everyone(world, tmp_path):
 
 async def test_questions_and_finished_thoughts_leave_a_pause(world):
     clock = Clock()
-    gaps = {"q": [], "s": []}
-    for seed in range(40):
+    gaps = {"mid": [], "end": []}
+    for seed in range(60):
         sim = PeopleSim(world, rng=random.Random(seed), clock=clock)
         g = Group(1, "kitchen", [Person("A", "x", 2.5, 2.5), Person("B", "x", 2.8, 2.5)], solo=False)
         sim.groups = [g]
-        for text, key in (("Are you coming too?", "q"), ("It rained all day.", "s")):
-            g.script = [(0, text)]
+        for key, script in (("mid", [(0, "Are you coming too?"), (1, "Sure.")]), ("end", [(0, "It rained all day.")])):
+            g.script = list(script)
             g.current, g.next_at = None, 0
             sim._speak(g, clock.t)
             gaps[key].append(g.next_at - g.current.t1)
-    assert min(gaps["q"]) >= 3.5                       # a question always leaves room to answer
-    assert max(gaps["s"]) >= 3.5 and min(gaps["s"]) < 2.3  # statements sometimes do, sometimes run on
+    assert max(gaps["mid"]) < 1.5                        # mid-thread replies come quickly
+    assert max(gaps["end"]) >= 6.0 and min(gaps["end"]) < 1.5  # a wrapped-up thread sometimes leaves room for droid
 
 
 async def test_held_floor_pauses_the_group_until_released(world):
@@ -294,3 +294,27 @@ async def test_held_floor_pauses_the_group_until_released(world):
     sim.release_floor()
     sim.step()
     assert g.spoken == 3
+
+
+async def test_voice_session_mid_turn_holds_the_seeker_then_releases(world, tmp_path):
+    ava = Group(1, "kitchen", [Person("Ava", "calm", 2.5, 2.5)], solo=True, topic="pizza")
+    clock, sim, nim, mem, sk, said = rig(world, tmp_path, [ava], start=(1.0, 1.0))
+    sk.hold(True)
+    await sk.tick()
+    assert sk.state == "seek" and not nim.gotos   # the phone's voice session is talking: stand still
+    sk.hold(False, grace=3.0)
+    clock.t += 1.0
+    await sk.tick()
+    assert not nim.gotos                          # still inside the grace period
+    clock.t += 3.0
+    await sk.tick()
+    assert sk.state == "approach"                 # released: back to seeking people
+
+
+async def test_driver_only_seeker_never_speaks(world, tmp_path):
+    ava = Group(1, "kitchen", [Person("Ava", "calm", 2.5, 2.5)], solo=True, topic="pizza")
+    clock, sim, nim, mem, sk, said = rig(world, tmp_path, [ava], start=(2.0, 2.0))
+    sk.llm = None                                 # as SEEKER_SPEAKS unset: the phone's voice session does the talking
+    for _ in range(40):
+        sim.step(); await sk.tick(); await settle(sk); clock.t += 0.5
+    assert said == []

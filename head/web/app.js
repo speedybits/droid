@@ -1,4 +1,4 @@
-import { Face } from "./face.js?v=9";
+import { Face } from "./face.js?v=11";
 import { createGemini, VOICES as GEMINI_VOICES } from "./providers/gemini.js";
 import { createGrok, VOICES as GROK_VOICES } from "./providers/grok.js?v=9";
 import { MusicDetector } from "./music.js?v=9";
@@ -31,7 +31,8 @@ const today = () => `cost.${new Date().toLocaleDateString("en-CA")}`; // local d
 
 // ---------- usage spark charts: per-minute buckets over the last 30 min ----------
 const BUCKETS = 30;
-const usage = { claude: new Array(BUCKETS).fill(0), gemini: new Array(BUCKETS).fill(0) };
+const usage = { claude: new Array(BUCKETS).fill(0), voice: new Array(BUCKETS).fill(0) };
+let voiceName = "Voice"; // label of the live voice provider (Grok or Gemini)
 let usageMin = Math.floor(Date.now() / 60000);
 function bump(name, n) {
   const now = Math.floor(Date.now() / 60000);
@@ -40,11 +41,11 @@ function bump(name, n) {
   drawUsage();
 }
 function drawUsage() {
-  const fmt = { claude: (v) => `${v >= 1000 ? (v / 1000).toFixed(1) + "k" : v} tok`, gemini: (v) => `${(v / 60).toFixed(1)} min` };
+  const fmt = { claude: (v) => `${v >= 1000 ? (v / 1000).toFixed(1) + "k" : v} tok`, voice: (v) => `${(v / 60).toFixed(1)} min` };
   for (const k in usage) {
     const d = usage[k], max = Math.max(...d, 1);
     $(`sp-${k}`).firstChild.setAttribute("points", d.map((v, i) => `${(i * 90 / (BUCKETS - 1)).toFixed(1)},${(21 - v / max * 20).toFixed(1)}`).join(" "));
-    $(`u-${k}`).textContent = `${k === "claude" ? "Claude" : "Gemini"} ${fmt[k](d.reduce((a, b) => a + b, 0))}`;
+    $(`u-${k}`).textContent = `${k === "claude" ? "Claude" : voiceName} ${fmt[k](d.reduce((a, b) => a + b, 0))}`;
   }
 }
 drawUsage();
@@ -54,7 +55,9 @@ setInterval(() => bump("claude", 0), 60000); // keep the window sliding while id
 function startCost(name) {
   sessionName = name;
   sessionSecs = 0;
-  costTimer = setInterval(() => { if (open) { sessionSecs++; if (name === "gemini") bump("gemini", 1); } }, 1000); // connected time only
+  voiceName = name[0].toUpperCase() + name.slice(1);
+  drawUsage();
+  costTimer = setInterval(() => { if (open) { sessionSecs++; bump("voice", 1); } }, 1000); // connected time only
 }
 
 function stopCost() {
@@ -276,9 +279,9 @@ function connectHead() {
 }
 
 // ---------- seeker speech: the server decides what to say, this page says it ----------
-// Spoken with the Gemini voice picked on the start screen (server-side TTS, POST /tts); if that fails
-// (no key, offline) the browser's own voice is the fallback. Browsers only allow audio after a user
-// gesture, so any tap on the page unlocks it; until then the line shows as a caption only.
+// Spoken with the provider and voice picked on the start screen (server-side TTS, POST /tts: Gemini or Grok); if that fails
+// (no key, offline) the error goes to the people view; there is no fallback voice. Browsers only allow audio after a user
+// gesture, so any tap on the page unlocks it; until then droid stays silent.
 let speechReady = false, ttsSpeaking = false, mouthTimer, ttsCtx, ttsAnalyser, ttsSrc, speakSeq = 0;
 function unlockSpeech() {
   if (speechReady) return;
@@ -290,11 +293,6 @@ function unlockSpeech() {
     ttsAnalyser.fftSize = 512;
     ttsAnalyser.connect(ttsCtx.destination);
   } catch { ttsCtx = null; }
-  if ("speechSynthesis" in window) {
-    const u = new SpeechSynthesisUtterance(" ");
-    u.volume = 0;
-    speechSynthesis.speak(u);
-  }
   if (SEEK && !active) caption("");
 }
 addEventListener("pointerdown", unlockSpeech);
@@ -312,48 +310,48 @@ function speakEnd() {
   setTimeout(() => !ttsSpeaking && caption(""), 2500);
 }
 
+// the provider picked on the start screen (this tab, else the last one used) also voices the seeker
+const ttsProvider0 = new URLSearchParams(location.search).get("provider");
 async function speak(text) {
+  const ttsProvider = sessionName || ttsProvider0 || store.get("provider") || "gemini";
   touch();
-  caption(text);
   express(text, 3000);
-  if (!speechReady) { setTimeout(() => caption(SEEK && !active ? "Tap anywhere to let me talk" : ""), 4000); return; }
+  if (!speechReady) return;
   if (ctx && (ctx.currentTime < nextPlay || pendingCalls.size)) return; // the voice session is mid-turn: don't talk over it
   const me = ++speakSeq; // a newer line replaces one still being fetched or spoken
   try { ttsSrc?.stop(); } catch {}
-  speechSynthesis?.cancel();
-  if (ttsCtx) {
-    try {
-      const res = await fetch("/tts", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, voice: store.get("voice.gemini") || "Puck" }) });
-      if (!res.ok) throw new Error(`tts ${res.status}`);
-      const buf = await ttsCtx.decodeAudioData(await res.arrayBuffer());
-      if (me !== speakSeq) return;
-      const src = (ttsSrc = ttsCtx.createBufferSource());
-      src.buffer = buf;
-      src.connect(ttsAnalyser);
-      const data = new Uint8Array(ttsAnalyser.fftSize);
-      speakStart();
-      mouthTimer = setInterval(() => { // mouth follows the actual audio level
-        ttsAnalyser.getByteTimeDomainData(data);
-        let sum = 0;
-        for (const v of data) sum += (v - 128) ** 2;
-        face.setLevel(Math.sqrt(sum / data.length) / 128 * 4);
-      }, 50);
-      src.onended = () => { if (me === speakSeq) speakEnd(); };
-      src.start();
-      return;
-    } catch (err) {
-      console.warn("Gemini TTS unavailable, using the browser voice:", err.message);
-      if (me !== speakSeq) return;
+  if (!ttsCtx) { speechError("no audio context"); return; }
+  try {
+    const res = await fetch("/tts", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, provider: ttsProvider, voice: store.get(`voice.${ttsProvider}`) || (ttsProvider === "grok" ? "eve" : "Puck") }) });
+    if (!res.ok) {
+      let detail = "";
+      try { detail = (await res.json()).detail; } catch {}
+      throw new Error(detail || `tts ${res.status}`);
     }
+    const buf = await ttsCtx.decodeAudioData(await res.arrayBuffer());
+    if (me !== speakSeq) return;
+    const src = (ttsSrc = ttsCtx.createBufferSource());
+    src.buffer = buf;
+    src.connect(ttsAnalyser);
+    const data = new Uint8Array(ttsAnalyser.fftSize);
+    speakStart();
+    mouthTimer = setInterval(() => { // mouth follows the actual audio level
+      ttsAnalyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (const v of data) sum += (v - 128) ** 2;
+      face.setLevel(Math.sqrt(sum / data.length) / 128 * 4);
+    }, 50);
+    src.onended = () => { if (me === speakSeq) speakEnd(); };
+    src.start();
+  } catch (err) {
+    if (me === speakSeq) speechError(err.message);
   }
-  if (!("speechSynthesis" in window)) return;
-  const u = new SpeechSynthesisUtterance(text);
-  u.rate = 1.05;
-  u.pitch = 1.25;
-  u.onstart = () => { speakStart(); mouthTimer = setInterval(() => face.setLevel(0.25 + Math.random() * 0.65), 90); };
-  u.onend = u.onerror = () => { if (me === speakSeq) speakEnd(); };
-  speechSynthesis.speak(u);
+}
+function speechError(msg) { // reported to the server so the people view shows it; the face stays as it is
+  console.warn("voice error:", msg);
+  fetch("/voice_error", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: msg }) }).catch(() => {});
 }
 if (SEEK) {
   newSession();
@@ -361,6 +359,12 @@ if (SEEK) {
   caption("Tap anywhere to let me talk");
 }
 const headSend = (o) => head?.readyState === 1 && head.send(JSON.stringify(o));
+// Tell the server when droid is mid-turn (speaking or thinking) so the simulator's seeker stands still.
+let voiceBusy = false;
+setInterval(() => {
+  const b = face.state === "speaking" || face.state === "thinking";
+  if (b !== voiceBusy) { voiceBusy = b; headSend({ type: "voice_busy", busy: b }); }
+}, 300);
 
 // Halt the robot and silence the voice; the session stays up (used for the spoken stop word).
 function emergencyStop() {
@@ -534,6 +538,7 @@ document.querySelectorAll("select[data-voice]").forEach((sel) => {
 
 document.querySelectorAll("[data-provider]").forEach((b) => (b.onclick = () => {
   const name = b.dataset.provider;
+  store.set("provider", name);
   boot(name, document.querySelector(`select[data-voice=${name}]`).value);
 }));
 const preselect = new URLSearchParams(location.search).get("provider");

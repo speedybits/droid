@@ -86,7 +86,7 @@ export class Face {
     this.sway = 0;           // dance: smoothed left/right lean, flips each beat
     this.lastBeat = 0;
     this.look = null;
-    this.nextLook = performance.now() + 2500;
+    this.nextLook = performance.now() + 1500;
     this.t0 = performance.now();
     addEventListener("resize", () => this.resize());
     this.resize();
@@ -256,26 +256,37 @@ export class Face {
     const e = EMOTIONS[name];
 
     // blinking (only visible on rect eyes)
-    if (now > this.nextBlink) { this.blink = 1; this.nextBlink = now + 2000 + Math.random() * 3500; }
-    this.blink = Math.max(0, this.blink - 0.12);
+    // Blinks vary: mostly quick, now and then a lazy slow one, and often a quick double.
+    if (now > this.nextBlink) {
+      const r = Math.random();
+      this.blink = 1;
+      this.blinkDecay = r < 0.12 ? 0.045 : 0.12;
+      this.nextBlink = now + (r > 0.78 ? 230 : 1600 + Math.random() * 3200);
+    }
+    this.blink = Math.max(0, this.blink - (this.blinkDecay || 0.12));
 
     const asleep = this.state === "sleeping";
     if (asleep) { this.gaze.tx = 0; this.gaze.ty = 0.5; this.gaze.next = now + 500; } // head down, still
 
     // gaze drift (look toward the side while "moving", up while thinking)
     if (now > this.gaze.next) {
-      const m = this.state === "moving" ? 0.5 : 0.2;
+      const m = this.state === "moving" ? 0.5 : this.state === "idle" ? 0.4 : 0.2;
       this.gaze.tx = (Math.random() - 0.5) * 2 * m;
       this.gaze.ty = this.state === "thinking" ? -0.4 : (Math.random() - 0.5) * 0.3;
       this.gaze.next = now + 800 + Math.random() * 1800;
     }
-    // idle: now and then look around properly (a side, up, or a slow sweep), hold, then settle back
+    // idle: look around properly (a side, up or down, a slow scan, a double-take), hold, then settle back
     if (this.state === "idle" || this.state === "listening") {
       if (!this.look && now > this.nextLook) {
-        const spots = [[-2.2, 0], [2.2, 0], [-1.8, -1.2], [1.8, -1.2], [0, -1.6], [-2, 0.8], [2, 0.8]];
+        const spots = [[-2.2, 0], [2.2, 0], [-1.8, -1.2], [1.8, -1.2], [0, -1.6], [-2, 0.8], [2, 0.8],
+          [-1, -1.4], [1, -1.4], [-2.4, -0.4], [2.4, -0.4], [0, 1.1]];
         const first = spots[Math.floor(Math.random() * spots.length)];
-        const sweep = Math.random() < 0.4 ? [-first[0], first[1] * 0.5] : null; // glance across to the other side
-        this.look = { steps: sweep ? [first, sweep] : [first], i: 0, until: now + 900 + Math.random() * 700 };
+        const r = Math.random();
+        const steps = r < 0.28 ? [first, [-first[0], first[1] * 0.5]]                  // glance across to the other side
+          : r < 0.42 ? [first, [0, 0], first]                                           // double-take
+          : r < 0.52 ? [[-2.2, -0.3], [0, -1.4], [2.2, -0.3]]                           // slow scan of the room
+          : [first];
+        this.look = { steps, i: 0, until: now + 700 + Math.random() * 800 };
       }
       if (this.look) {
         const [lx, ly] = this.look.steps[this.look.i];
@@ -283,8 +294,12 @@ export class Face {
         this.gaze.ty = ly;
         this.gaze.next = now + 300; // hold the drift off while looking
         if (now > this.look.until) {
-          if (++this.look.i < this.look.steps.length) this.look.until = now + 900 + Math.random() * 600;
-          else { this.look = null; this.nextLook = now + 3500 + Math.random() * 5000; this.gaze.next = 0; }
+          if (++this.look.i < this.look.steps.length) this.look.until = now + 600 + Math.random() * 600;
+          else {
+            this.look = null;
+            this.nextLook = now + (this.state === "idle" ? 1400 + Math.random() * 3200 : 3500 + Math.random() * 5000);
+            this.gaze.next = 0;
+          }
         }
       }
     } else if (this.look) {
@@ -363,8 +378,8 @@ export class Face {
       g.globalAlpha = 1;
     }
 
-    // sweat drop (nervous)
-    if (e.sweat) {
+    // sweat drop: only for a brief nervous reaction, never on the lingering low-mood face (it read as a tear)
+    if (e.sweat && this.emotion === name && now < this.emotionUntil) {
       const sx = cx + ex * 1.55, sy = ey - u * 0.1 + (Math.sin(t * 2) + 1) * u * 0.008;
       g.beginPath();
       g.moveTo(sx, sy - u * 0.04);

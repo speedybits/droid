@@ -31,6 +31,8 @@ if not logging.getLogger("head").handlers:
     _h.setFormatter(logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
     logging.getLogger("head").addHandler(_h)
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+XAI_TTS_URL = "https://api.x.ai/v1/tts"
+GROK_VOICES = {"eve", "ara", "rex", "sal", "leo"}
 XAI_TOKEN_URL = "https://api.x.ai/v1/realtime/client_secrets"
 
 
@@ -155,7 +157,11 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
             log.warning("ANTHROPIC_API_KEY not set: people use scripted lines and droid will not speak")
         people = PeopleSim(world, llm, os.getenv("SIM_MODEL", "claude-haiku-5-5"), avoid=(pose["x"], pose["y"]))
         log.info("seeker on: %d people in %d groups", sum(len(g.people) for g in people.groups), len(people.groups))
-        return Seeker(app.state.nimbus, people, memory, llm, app.state.model)
+        # By default the phone's live Grok/Gemini session does all listening and speaking, as on the real robot
+        # (it hears the people through the laptop speakers). The seeker only drives. SEEKER_SPEAKS=1 restores
+        # the old text-injection brain that decides and speaks by itself.
+        brain = llm if os.getenv("SEEKER_SPEAKS") else None
+        return Seeker(app.state.nimbus, people, memory, brain, app.state.model)
 
     app = FastAPI(title="droid head", lifespan=lifespan)
     app.state.heads = set()  # send-callables of connected /ws/head sockets, for broadcasts
@@ -175,27 +181,68 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
         text, voice = str(body.get("text", "")).strip()[:400], body.get("voice") or "Puck"
         if not text:
             raise HTTPException(400, "no text")
+        if body.get("provider") == "grok":
+            if voice not in GROK_VOICES:
+                raise HTTPException(400, f"unknown voice {voice!r}")
+            key = os.getenv("XAI_API_KEY")
+            if not key:
+                raise HTTPException(500, "XAI_API_KEY not set")
+            async with httpx.AsyncClient(timeout=30) as http:
+                try:
+                    r = await http.post(XAI_TTS_URL, headers={"Authorization": f"Bearer {key}"},
+                                        json={"text": text, "voice_id": voice, "language": "en"})
+                except httpx.HTTPError as e:
+                    raise HTTPException(502, f"Grok TTS failed ({type(e).__name__})")
+            if r.status_code != 200:
+                raise HTTPException(502, f"Grok TTS failed (status {r.status_code})")
+            return Response(r.content, media_type=r.headers.get("content-type", "audio/mpeg"))
         if voice not in GEMINI_VOICES:
             raise HTTPException(400, f"unknown voice {voice!r}")
         key = os.getenv("GEMINI_API_KEY")
         if not key:
             raise HTTPException(500, "GEMINI_API_KEY not set")
         model = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+        payload = {
+            "contents": [{"parts": [{"text": text}]}],
+            "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
+                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}}}}
+        pcm, why = None, ""
+        # the preview TTS model fails now and then (429/5xx, or a reply with no audio); retry so the voice stays the same
         async with httpx.AsyncClient(timeout=30) as http:
-            r = await http.post(GEMINI_TTS_URL.format(model=model), headers={"x-goog-api-key": key}, json={
-                "contents": [{"parts": [{"text": text}]}],
-                "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
-                    "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}}}})
-        if r.status_code != 200:
-            raise HTTPException(502, f"Gemini TTS failed ({r.status_code})")
-        try:
-            pcm = base64.b64decode(r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
-        except (KeyError, IndexError, ValueError):
-            raise HTTPException(502, "Gemini TTS returned no audio")
+            for attempt in range(3):
+                try:
+                    r = await http.post(GEMINI_TTS_URL.format(model=model), headers={"x-goog-api-key": key}, json=payload)
+                    if r.status_code == 200:
+                        pcm = base64.b64decode(r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+                        break
+                    why = f"status {r.status_code}"
+                    if r.status_code == 429:  # quota, not a blip: retrying only wastes requests
+                        try:
+                            why += ": " + r.json()["error"]["message"].split("\n")[1].strip("* ")[:140]
+                        except (KeyError, IndexError, ValueError):
+                            pass
+                        logging.getLogger("head").warning("Gemini TTS quota: %s", why)
+                        break
+                except (KeyError, IndexError, ValueError):
+                    why = "no audio in reply"
+                except httpx.HTTPError as e:
+                    why = type(e).__name__
+                logging.getLogger("head").warning("Gemini TTS attempt %d failed: %s", attempt + 1, why)
+                await asyncio.sleep(0.4 * (attempt + 1))
+        if pcm is None:
+            raise HTTPException(502, f"Gemini TTS failed ({why})")
         buf = io.BytesIO()
         with wave.open(buf, "wb") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(pcm)
         return Response(buf.getvalue(), media_type="audio/wav")
+
+    app.state.voice_error = None  # (message, time) of the last speech failure, shown in the people view
+
+    @app.post("/voice_error")
+    async def voice_error(body: dict):
+        app.state.voice_error = (str(body.get("message", "unknown"))[:200], datetime.now(timezone.utc).timestamp())
+        logging.getLogger("head").warning("voice error: %s", app.state.voice_error[0])
+        return {"ok": True}
 
     @app.get("/sim/world")
     async def sim_world():
@@ -217,6 +264,8 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
         snap["pose"] = pose
         snap["seeker"] = sk.snapshot()
         snap["tokens"] = {"sim": sk.people.tokens, "droid": sk.tokens}
+        ve = app.state.voice_error
+        snap["voice_error"] = ve[0] if ve and datetime.now(timezone.utc).timestamp() - ve[1] < 15 else None
         return snap
 
     @app.get("/memory/brief")
@@ -311,12 +360,17 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
                     t = asyncio.create_task(run_request(msg["id"], msg["request"]))
                     tasks.add(t)
                     t.add_done_callback(tasks.discard)
+                elif kind == "voice_busy":  # the live voice session is mid-turn: the seeker stands still
+                    if sk():
+                        sk().hold(bool(msg.get("busy")))
                 elif kind == "stop":
                     await halt()
         except WebSocketDisconnect:
             pass
         finally:
             app.state.heads.discard(send)
+            if sk():
+                sk().hold(False, 0)
             # Watchdog: losing the phone means nobody is listening; stop the robot.
             await halt()
             # An explicit end summarizes now; a bare disconnect waits in case the phone reconnects.

@@ -102,6 +102,9 @@ def test_seeker_say_is_broadcast_and_people_view_served():
         def pause(self, secs=None):
             self.paused.append(secs)
 
+        def hold(self, on, grace=3.0):
+            self.holds = getattr(self, "holds", []) + [on]
+
         def resume(self):
             self.paused.append("resume")
 

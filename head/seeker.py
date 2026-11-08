@@ -60,6 +60,8 @@ class Seeker:
         self.tokens = 0
         self._paused_until: float | None = None
         self._paused = False
+        self._hold = False        # the phone's voice session is mid-turn
+        self._hold_until = 0.0
         self._move: asyncio.Task | None = None
         self._face = ""
         self._pose = (0.0, 0.0, 0.0)
@@ -91,6 +93,12 @@ class Seeker:
         self._paused = False
         self._paused_until = None
 
+    def hold(self, on: bool, grace: float = 3.0) -> None:
+        """The phone's voice session is talking/thinking: stand still until a moment after it finishes."""
+        self._hold = on
+        if not on:
+            self._hold_until = self.clock() + grace
+
     async def run(self) -> None:
         while True:
             try:
@@ -108,9 +116,10 @@ class Seeker:
         now = self.clock()
         if self._paused and self._paused_until and now >= self._paused_until:
             self.resume()
-        if self._paused:
+        if self._paused or self._hold or now < self._hold_until:
             await self._halt_move()
-            await self._set_face("idle")
+            if self._paused:
+                await self._set_face("idle")
             return
         st = await self.nimbus.sim_state()
         self._pose = (st["x"], st["y"], st.get("theta", 0.0))
@@ -360,4 +369,4 @@ class Seeker:
             await self.on_face(state)
 
     def snapshot(self) -> dict:
-        return {"state": self.state, "paused": self._paused, "room": self._room, "pose": self._pose}
+        return {"state": self.state, "paused": self._paused or self._hold, "room": self._room, "pose": self._pose}

@@ -288,17 +288,19 @@ class PeopleSim:
         who, text = g.script.pop(0)
         who = min(max(who, 0), len(g.people) - 1)
         p = g.people[who]
-        dur = max(BUBBLE_MIN_S, 2.0 + 0.06 * len(text))
+        dur = max(BUBBLE_MIN_S, 1.2 + 0.07 * len(text))
         g.current = Utterance(next(self._ids), g.id, g.room, who, p.name, p.x, p.y, text, now, now + dur)
         g.history.append(f"{p.name}: {text}")
         g.history = g.history[-12:]
         g.spoken += 1
         if g.solo:
-            gap = self.rng.uniform(4, 7)
-        elif text.rstrip().endswith("?") or self.rng.random() < 0.3:
-            gap = self.rng.uniform(3.5, 6.0)  # a question hangs in the air, or a thought is finished: room for someone else
+            gap = self.rng.uniform(2.0, 4.0)  # a person musing aloud, leaving room for a reply
+        elif not g.script and self.rng.random() < 0.35:
+            gap = self.rng.uniform(6.0, 9.0)  # a thread has wrapped up: a long lull, long enough for droid to chip in
+        elif text.rstrip().endswith("?"):
+            gap = self.rng.uniform(0.5, 1.4)  # questions get answered promptly
         else:
-            gap = self.rng.uniform(0.8, 2.2)
+            gap = self.rng.uniform(0.2, 1.0)  # natural back-and-forth
         g.next_at = now + dur + gap
 
     def _request_script(self, g: Group) -> None:

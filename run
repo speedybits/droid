@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Launcher for droid. `./run` shows a menu; or pass a mode: sim | robot | head | status | stop
 #
-#   sim    nimbus simulator + simulated people + head server; opens the people view (map, speech bubbles) and the
-#          droid face in separate windows. Droid seeks people, listens, and talks back (tap the face window once).
+#   sim    nimbus simulator + simulated people + head server; opens the people view (map, speech bubbles) as
+#          the only window. People speak aloud (Chrome voices) when droid is within 1 m; open the face on your phone
+#          (tailscale URL printed) and its live Grok/Gemini session hears them through the speakers.
 #   robot  head server only, talking to the real robot's nimbus (NIMBUS_URL from .env, default the Jetson)
 #   head   head server only, using whatever NIMBUS_URL / .env says (no nimbus started)
 #
@@ -115,10 +116,11 @@ mode_sim() {
   export SEEKER=1   # head server runs the simulated people and droid's seek/listen loop
   start_nimbus_sim
   start_head "http://localhost:$NIMBUS_PORT"
-  say "people view: http://localhost:$HEAD_PORT/people.html   (nimbus's own map: http://localhost:$NIMBUS_PORT/sim)"
-  say "face:        http://localhost:$HEAD_PORT/?seek=1   (tap it once so droid can speak aloud)"
+  local ts; ts=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' 2>/dev/null | sed 's/\.$//')
+  say "map + people: http://localhost:$HEAD_PORT/people.html   (click it once so Chrome speaks the people aloud)"
+  say "phone face:   ${ts:+https://$ts}${ts:-your tailscale URL}   (open in iPhone Safari and tap to wake)"
+  say "the phone's live voice session listens to the laptop speakers; the seeker only drives (SEEKER_SPEAKS=1 for the old text brain)"
   open_window "http://localhost:$HEAD_PORT/people.html"
-  open_window "http://localhost:$HEAD_PORT/?seek=1"
   wait_and_cleanup
 }
 
