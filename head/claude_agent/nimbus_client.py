@@ -40,6 +40,14 @@ class NimbusClient:
     async def stop(self):
         return await self._call("POST", "/api/claude/stop")
 
+    async def sim_world(self):
+        """Static sim geometry (404 when nimbus is not running with --sim)."""
+        return await self._call("GET", "/api/sim/world")
+
+    async def sim_state(self):
+        """Ground-truth sim pose {x, y, theta (rad, CCW from +x)}. Simulator only."""
+        return await self._call("GET", "/api/sim/state")
+
     async def check(self) -> list[str]:
         """Compare nimbus's published API with what droid calls. Returns problems; [] means compatible.
 

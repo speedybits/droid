@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Launcher for droid. `./run` shows a menu; or pass a mode: sim | robot | head | status | stop
 #
-#   sim    nimbus simulator (virtual room) + head server, opens the room view and the head in separate windows
+#   sim    nimbus simulator + simulated people + head server; opens the people view (map, speech bubbles) and the
+#          droid face in separate windows. Droid seeks people, listens, and talks back (tap the face window once).
 #   robot  head server only, talking to the real robot's nimbus (NIMBUS_URL from .env, default the Jetson)
 #   head   head server only, using whatever NIMBUS_URL / .env says (no nimbus started)
 #
@@ -111,12 +112,13 @@ wait_and_cleanup() {
 }
 
 mode_sim() {
+  export SEEKER=1   # head server runs the simulated people and droid's seek/listen loop
   start_nimbus_sim
   start_head "http://localhost:$NIMBUS_PORT"
-  say "room view: http://localhost:$NIMBUS_PORT/sim"
-  say "head:      http://localhost:$HEAD_PORT/   (tap the face to wake)"
-  open_window "http://localhost:$NIMBUS_PORT/sim"
-  open_window "http://localhost:$HEAD_PORT/"
+  say "people view: http://localhost:$HEAD_PORT/people.html   (nimbus's own map: http://localhost:$NIMBUS_PORT/sim)"
+  say "face:        http://localhost:$HEAD_PORT/?seek=1   (tap it once so droid can speak aloud)"
+  open_window "http://localhost:$HEAD_PORT/people.html"
+  open_window "http://localhost:$HEAD_PORT/?seek=1"
   wait_and_cleanup
 }
 

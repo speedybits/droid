@@ -11,6 +11,7 @@ const IDLE_SECS = Number(new URLSearchParams(location.search).get("sleep")) || 6
 const PROVIDERS = { grok: createGrok, gemini: createGemini };
 const VOICES = { grok: GROK_VOICES, gemini: GEMINI_VOICES };
 
+const SEEK = new URLSearchParams(location.search).has("seek"); // simulator: the server seeks people and speaks through this page
 const $ = (id) => document.getElementById(id);
 const face = new Face($("face"));
 const preview = new URLSearchParams(location.search).get("face"); // ?face=<name> shows one expression
@@ -144,7 +145,7 @@ function meter() {
   for (const v of levelBuf) sum += (v - 128) ** 2;
   const rms = Math.sqrt(sum / levelBuf.length) / 128;
   if (ctx.currentTime < nextPlay) { touch(); face.setState("speaking"); face.setLevel(rms * 4); }
-  else if (face.state === "speaking") face.setState(open ? "listening" : "idle");
+  else if (face.state === "speaking" && !ttsSpeaking) face.setState(open ? "listening" : "idle");
   requestAnimationFrame(meter);
 }
 
@@ -156,6 +157,7 @@ const touch = () => (lastActivity = Date.now());
 function startIdleTimer() {
   clearInterval(idleTimer);
   idleTimer = setInterval(() => {
+    if (SEEK) { touch(); return; } // simulator: droid is out among people (listening, driving, talking), never idle
     if (!active || sleeping || !open || pendingCalls.size || ctx.currentTime < nextPlay) return;
     if (face.state === "moving" || face.state === "thinking") { touch(); return; } // robot is busy
     if ((sleepAt && Date.now() > sleepAt) || Date.now() - lastActivity > IDLE_SECS * 1000) goToSleep();
@@ -253,10 +255,12 @@ function stopWake() {
 
 // ---------- head server link ----------
 function connectHead() {
+  if (head && head.readyState < 2) { const old = head; head = null; old.close(); } // never two sockets: each would speak
   const ws = (head = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/head?sid=${sessionId()}`));
   ws.onmessage = async (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === "face" && !sleeping) face.setState(m.state);
+    if (m.type === "say") { speak(m.text); return; }
+    if (m.type === "face" && !sleeping && !ttsSpeaking) face.setState(m.state);
     if (m.type === "claude_status") caption(m.text);
     if (m.type === "turn") { face.turning(m.dir); return; }
     if (m.type === "usage") { bump("claude", m.claude_tokens); return; }
@@ -268,7 +272,93 @@ function connectHead() {
       if (active) provider.sendToolResult(call.callId, call.name, m.text);
     }
   };
-  ws.onclose = () => { if (active && !sleeping && head === ws) setTimeout(connectHead, 1000); };
+  ws.onclose = () => { if ((active || SEEK) && !sleeping && head === ws) setTimeout(connectHead, 1000); };
+}
+
+// ---------- seeker speech: the server decides what to say, this page says it ----------
+// Spoken with the Gemini voice picked on the start screen (server-side TTS, POST /tts); if that fails
+// (no key, offline) the browser's own voice is the fallback. Browsers only allow audio after a user
+// gesture, so any tap on the page unlocks it; until then the line shows as a caption only.
+let speechReady = false, ttsSpeaking = false, mouthTimer, ttsCtx, ttsAnalyser, ttsSrc, speakSeq = 0;
+function unlockSpeech() {
+  if (speechReady) return;
+  speechReady = true;
+  try {
+    ttsCtx = new AudioContext();
+    ttsCtx.resume();
+    ttsAnalyser = ttsCtx.createAnalyser();
+    ttsAnalyser.fftSize = 512;
+    ttsAnalyser.connect(ttsCtx.destination);
+  } catch { ttsCtx = null; }
+  if ("speechSynthesis" in window) {
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    speechSynthesis.speak(u);
+  }
+  if (SEEK && !active) caption("");
+}
+addEventListener("pointerdown", unlockSpeech);
+addEventListener("keydown", unlockSpeech);
+
+function speakStart() {
+  ttsSpeaking = true;
+  face.setState("speaking");
+}
+function speakEnd() {
+  clearInterval(mouthTimer);
+  ttsSpeaking = false;
+  face.setLevel(0);
+  face.setState(open ? "listening" : "idle");
+  setTimeout(() => !ttsSpeaking && caption(""), 2500);
+}
+
+async function speak(text) {
+  touch();
+  caption(text);
+  express(text, 3000);
+  if (!speechReady) { setTimeout(() => caption(SEEK && !active ? "Tap anywhere to let me talk" : ""), 4000); return; }
+  if (ctx && (ctx.currentTime < nextPlay || pendingCalls.size)) return; // the voice session is mid-turn: don't talk over it
+  const me = ++speakSeq; // a newer line replaces one still being fetched or spoken
+  try { ttsSrc?.stop(); } catch {}
+  speechSynthesis?.cancel();
+  if (ttsCtx) {
+    try {
+      const res = await fetch("/tts", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice: store.get("voice.gemini") || "Puck" }) });
+      if (!res.ok) throw new Error(`tts ${res.status}`);
+      const buf = await ttsCtx.decodeAudioData(await res.arrayBuffer());
+      if (me !== speakSeq) return;
+      const src = (ttsSrc = ttsCtx.createBufferSource());
+      src.buffer = buf;
+      src.connect(ttsAnalyser);
+      const data = new Uint8Array(ttsAnalyser.fftSize);
+      speakStart();
+      mouthTimer = setInterval(() => { // mouth follows the actual audio level
+        ttsAnalyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (const v of data) sum += (v - 128) ** 2;
+        face.setLevel(Math.sqrt(sum / data.length) / 128 * 4);
+      }, 50);
+      src.onended = () => { if (me === speakSeq) speakEnd(); };
+      src.start();
+      return;
+    } catch (err) {
+      console.warn("Gemini TTS unavailable, using the browser voice:", err.message);
+      if (me !== speakSeq) return;
+    }
+  }
+  if (!("speechSynthesis" in window)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 1.05;
+  u.pitch = 1.25;
+  u.onstart = () => { speakStart(); mouthTimer = setInterval(() => face.setLevel(0.25 + Math.random() * 0.65), 90); };
+  u.onend = u.onerror = () => { if (me === speakSeq) speakEnd(); };
+  speechSynthesis.speak(u);
+}
+if (SEEK) {
+  newSession();
+  connectHead();
+  caption("Tap anywhere to let me talk");
 }
 const headSend = (o) => head?.readyState === 1 && head.send(JSON.stringify(o));
 

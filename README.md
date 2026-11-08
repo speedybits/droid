@@ -47,3 +47,24 @@ The robot remembers across conversations. Everything lives as plain text under `
 
 Each time the voice model connects, the server hands it the facts, summary and (after a reconnect) the current
 conversation; Claude gets the same when it navigates. These files contain household speech: to wipe, delete `data/`.
+
+## Simulator: people to find, listen to and talk with
+`./run sim` starts nimbus's `four_rooms` sim, the head server with `SEEKER=1`, and opens two windows:
+- `http://localhost:8443/people.html`: the map with droid, a dashed 1 m hearing ring, people and speech bubbles
+  (green bubble = droid can hear it). Yellow-ringed people are alone in their room.
+- `http://localhost:8443/?seek=1`: droid's face. Tap it once so the browser allows speech; droid's lines are then spoken
+  aloud (browser TTS) with the face's mouth moving, and also shown as a caption.
+
+Each room gets 1-4 people. Groups of 2-4 talk from the moment the sim starts (droid usually arrives mid-conversation and
+only hears what is said within 1 m). A lone person stays silent until droid is within 1 m, then talks to it; droid is not
+told that, it has to work it out. Dialogue is written by `SIM_MODEL` (Haiku), a short script per call, regenerated when droid
+speaks nearby so the people can react. Droid's own decisions use `CLAUDE_MODEL`.
+
+Droid's loop (`head/seeker.py`): patrol rooms (least recently visited first), head for anyone in line of sight within
+3.5 m (position only, no words: a stand-in for the planned camera), stand where it can hear the whole group, log everything
+overheard, and decide whether to say something at each *pause* (when the speaker stops). Groups leave natural openings
+(after a question, or a finished thought) and wait while droid thinks. It cannot tell who is speaking.
+Memory: lines go to `data/transcripts/` tagged with the room (`heard` = overheard, `droid` = its own words); each decision
+prompt includes the recent lines from every room, so it can bring up room one in room two. The phone voice flow pauses the
+seeker while a request is running, and STOP pauses it for 20 s.
+Without `ANTHROPIC_API_KEY` the people use scripted lines and droid listens but does not speak. `LOG_LEVEL=DEBUG` for more logs.

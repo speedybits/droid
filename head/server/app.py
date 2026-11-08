@@ -1,10 +1,13 @@
 """Head server: serves the phone web app, mints xAI ephemeral tokens, bridges ask_claude to Claude."""
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import os
 import uuid
+import wave
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,17 +15,27 @@ from pathlib import Path
 import httpx
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from head.claude_agent.agent import ClaudeAgent
 from head.claude_agent.nimbus_client import NimbusClient
+from head.seeker import Seeker
 from head.server.memory import MemoryStore
+from head.sim.people import PeopleSim
 
 log = logging.getLogger("head")
+logging.getLogger("head").setLevel(os.getenv("LOG_LEVEL", "INFO"))  # uvicorn only configures its own loggers
+if not logging.getLogger("head").handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
+    logging.getLogger("head").addHandler(_h)
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 XAI_TOKEN_URL = "https://api.x.ai/v1/realtime/client_secrets"
 
 
+GEMINI_VOICES = {"Puck", "Charon", "Kore", "Fenrir", "Aoede"}  # keep in step with providers/gemini.js
+GEMINI_TTS_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GEMINI_TOKEN_URL = "https://generativelanguage.googleapis.com/v1beta/auth_tokens"
 
 
@@ -83,8 +96,8 @@ class NoCacheStatic(StaticFiles):
 
 
 def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = None,
-               memory: MemoryStore | None = None) -> FastAPI:
-    """Factory so tests can inject a fake agent/nimbus/memory."""
+               memory: MemoryStore | None = None, seeker: Seeker | None = None) -> FastAPI:
+    """Factory so tests can inject a fake agent/nimbus/memory/seeker."""
     _load_dotenv()
     memory = memory or MemoryStore(Path(os.getenv("DROID_DATA", "data")))
 
@@ -96,6 +109,13 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
             app.state.llm = app.state.llm or AsyncAnthropic()
             app.state.agent = ClaudeAgent(
                 app.state.llm, app.state.nimbus, os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5"), memory)
+        tasks: list[asyncio.Task] = []
+        if app.state.seeker is None and os.getenv("SEEKER"):
+            app.state.seeker = await _build_seeker(app)
+        if app.state.seeker is not None:
+            sk = app.state.seeker
+            sk.on_say, sk.on_face = on_seeker_say, on_seeker_face
+            tasks += [asyncio.create_task(sk.people.run()), asyncio.create_task(sk.run())]
         # Warn about nimbus drift at startup; never block, since the robot may simply be off.
         if hasattr(app.state.nimbus, "check"):
             problems = await app.state.nimbus.check()
@@ -104,8 +124,42 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
             if not problems:
                 log.info("nimbus check: API compatible")
         yield
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def broadcast(msg: dict):
+        for send in list(app.state.heads):
+            try:
+                await send(msg)
+            except Exception:
+                app.state.heads.discard(send)
+
+    async def on_seeker_say(text: str):
+        await broadcast({"type": "say", "text": text})
+
+    async def on_seeker_face(state: str):
+        await broadcast({"type": "face", "state": state})
+
+    async def _build_seeker(app) -> Seeker | None:
+        """Sim people + the seeking brain. Needs nimbus running with --sim; otherwise stays off."""
+        try:
+            world = await app.state.nimbus.sim_world()
+            pose = await app.state.nimbus.sim_state()
+        except Exception as e:
+            log.warning("seeker disabled: nimbus is not running a simulation (%s)", e)
+            return None
+        has_key = bool(os.getenv("ANTHROPIC_API_KEY"))
+        llm = app.state.llm if has_key else None
+        if llm is None:
+            log.warning("ANTHROPIC_API_KEY not set: people use scripted lines and droid will not speak")
+        people = PeopleSim(world, llm, os.getenv("SIM_MODEL", "claude-haiku-5-5"), avoid=(pose["x"], pose["y"]))
+        log.info("seeker on: %d people in %d groups", sum(len(g.people) for g in people.groups), len(people.groups))
+        return Seeker(app.state.nimbus, people, memory, llm, app.state.model)
 
     app = FastAPI(title="droid head", lifespan=lifespan)
+    app.state.heads = set()  # send-callables of connected /ws/head sockets, for broadcasts
+    app.state.seeker = seeker
     app.state.agent = agent
     app.state.nimbus = nimbus
     app.state.memory = memory
@@ -114,6 +168,56 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
     app.state.pending_end = {}  # session id -> delayed summarize task
     # [{"role": "user"|"voice"|"claude", "text": str}]; seeded from disk so a restart keeps context
     app.state.transcript = memory.recent()
+
+    @app.post("/tts")
+    async def tts(body: dict):
+        """Speak a line in a chosen Gemini voice (the key stays here). Returns a WAV the page can decode."""
+        text, voice = str(body.get("text", "")).strip()[:400], body.get("voice") or "Puck"
+        if not text:
+            raise HTTPException(400, "no text")
+        if voice not in GEMINI_VOICES:
+            raise HTTPException(400, f"unknown voice {voice!r}")
+        key = os.getenv("GEMINI_API_KEY")
+        if not key:
+            raise HTTPException(500, "GEMINI_API_KEY not set")
+        model = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+        async with httpx.AsyncClient(timeout=30) as http:
+            r = await http.post(GEMINI_TTS_URL.format(model=model), headers={"x-goog-api-key": key}, json={
+                "contents": [{"parts": [{"text": text}]}],
+                "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
+                    "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}}}})
+        if r.status_code != 200:
+            raise HTTPException(502, f"Gemini TTS failed ({r.status_code})")
+        try:
+            pcm = base64.b64decode(r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+        except (KeyError, IndexError, ValueError):
+            raise HTTPException(502, "Gemini TTS returned no audio")
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(pcm)
+        return Response(buf.getvalue(), media_type="audio/wav")
+
+    @app.get("/sim/world")
+    async def sim_world():
+        return await app.state.nimbus.sim_world()
+
+    @app.get("/sim/people")
+    async def sim_people():
+        """Everything the people view draws: pose, people, speech bubbles, droid's bubble and state."""
+        sk = app.state.seeker
+        if sk is None:
+            raise HTTPException(404, "seeker is off (start with SEEKER=1 against a nimbus --sim)")
+        try:
+            st = await app.state.nimbus.sim_state()
+            sk.people.update_droid(st["x"], st["y"])
+            pose = {"x": st["x"], "y": st["y"], "theta": st.get("theta", 0.0)}
+        except Exception:
+            pose = None
+        snap = sk.people.snapshot()
+        snap["pose"] = pose
+        snap["seeker"] = sk.snapshot()
+        snap["tokens"] = {"sim": sk.people.tokens, "droid": sk.tokens}
+        return snap
 
     @app.get("/memory/brief")
     async def memory_brief(sid: str = ""):
@@ -153,6 +257,9 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
         async def send(msg: dict):
             await ws.send_text(json.dumps(msg))
 
+        app.state.heads.add(send)
+        sk = lambda: app.state.seeker  # noqa: E731  (may be injected or built in lifespan)
+
         async def run_request(req_id: str, request: str):
             async def on_status(text: str):
                 await send({"type": "claude_status", "id": req_id, "text": text})
@@ -160,6 +267,8 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
                 await send({"type": "turn", "dir": d})
             await send({"type": "face", "state": "thinking"})
             before = getattr(app.state.agent, "tokens", 0)
+            if sk():
+                sk().pause()  # a person is asking for something: the seeker steps aside
             try:
                 text = await app.state.agent.handle(request, app.state.transcript, on_status, on_turn)
             except asyncio.CancelledError:
@@ -172,8 +281,12 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
             await send({"type": "usage", "claude_tokens": getattr(app.state.agent, "tokens", 0) - before})
             await send({"type": "claude_result", "id": req_id, "text": text})
             await send({"type": "face", "state": "idle"})
+            if sk():
+                sk().resume()
 
         async def halt():
+            if sk():
+                sk().pause(20)  # STOP means stop: stay put a while before seeking again
             for t in list(tasks):
                 t.cancel()
             try:
@@ -203,6 +316,7 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
         except WebSocketDisconnect:
             pass
         finally:
+            app.state.heads.discard(send)
             # Watchdog: losing the phone means nobody is listening; stop the robot.
             await halt()
             # An explicit end summarizes now; a bare disconnect waits in case the phone reconnects.

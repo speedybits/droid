@@ -65,3 +65,68 @@ async def test_mint_grok_accepts_nested_and_flat_shapes():
         t = httpx.MockTransport(lambda req, b=body: httpx.Response(200, json=b))
         async with httpx.AsyncClient(transport=t) as http:
             assert await _mint_grok(http, "k") == "xai-client-secret.t"
+
+
+def test_sim_people_404_without_seeker():
+    with TestClient(create_app(FakeAgent(), FakeNimbus())) as c:
+        assert c.get("/sim/people").status_code == 404
+
+
+def test_seeker_say_is_broadcast_and_people_view_served():
+    import asyncio
+    import random
+
+    from head.sim.people import PeopleSim
+    from conftest import four_rooms_world
+
+    class NimbusSim(FakeNimbus):
+        async def sim_state(self):
+            return {"x": 1.0, "y": 1.0, "theta": 0.0}
+
+        async def sim_world(self):
+            return four_rooms_world()
+
+    class FakeSeeker:
+        state, tokens, on_say, on_face = "seek", 0, None, None
+
+        def __init__(self):
+            self.people = PeopleSim(four_rooms_world(), rng=random.Random(1))
+            self.paused = []
+
+        async def run(self):
+            await asyncio.sleep(3600)
+
+        def snapshot(self):
+            return {"state": "seek", "paused": False, "room": "kitchen", "pose": (1, 1, 0)}
+
+        def pause(self, secs=None):
+            self.paused.append(secs)
+
+        def resume(self):
+            self.paused.append("resume")
+
+    sk = FakeSeeker()
+    orig_run = sk.people.run
+
+    async def idle(interval=0.25):
+        await asyncio.sleep(3600)
+
+    sk.people.run = idle
+    with TestClient(create_app(FakeAgent(), NimbusSim(), seeker=sk)) as c:
+        snap = c.get("/sim/people").json()
+        assert snap["people"] and snap["droid"]["room"] == "kitchen" and snap["hear_range"] == 1.0
+        assert c.get("/people.html").status_code == 200
+        with c.websocket_connect("/ws/head") as ws:
+            c.portal.call(sk.on_say, "hello humans")
+            assert ws.receive_json() == {"type": "say", "text": "hello humans"}
+            ws.send_json({"type": "ask_claude", "id": "1", "request": "move"})
+            [ws.receive_json() for _ in range(4)]
+        assert None in sk.paused and "resume" in sk.paused  # seeker stepped aside for the request, then resumed
+
+
+def test_tts_validates_input_and_needs_key(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with TestClient(create_app(FakeAgent(), FakeNimbus())) as c:
+        assert c.post("/tts", json={"text": ""}).status_code == 400
+        assert c.post("/tts", json={"text": "hi", "voice": "Nope"}).status_code == 400
+        assert c.post("/tts", json={"text": "hi", "voice": "Kore"}).status_code == 500

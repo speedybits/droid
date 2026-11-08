@@ -97,3 +97,39 @@ def test_server_logs_remembers_and_serves_brief(tmp_path):
     # a fresh server on the same dir still has it all
     assert "name is Mike" in MemoryStore(tmp_path).brief()
     assert create_app(FakeAgent(), FakeNimbus(), MemoryStore(tmp_path)).state.transcript[0]["text"] == "call me Mike"
+
+
+def test_room_tagged_lines_and_cross_room_recall(tmp_path):
+    from head.server.memory import MemoryStore
+    m = MemoryStore(tmp_path / "d")
+    m.log("e1", "heard", "we should book the Lisbon flights", "kitchen")
+    m.log("e1", "droid", "Lisbon sounds lovely", "kitchen")
+    m.log("e2", "heard", "the tap is still leaking", "office")
+    recall = m.recall("office")
+    assert "(you are here now)" in recall and recall.index("office") < recall.index("kitchen")
+    assert "you said: Lisbon sounds lovely" in recall and "overheard: we should book the Lisbon flights" in recall
+    assert m.session_lines("e1")[0]["room"] == "kitchen"
+    assert m.recent()[0] == {"role": "heard", "text": "we should book the Lisbon flights"}  # old shape unchanged
+
+
+async def test_summarize_counts_heard_lines_and_tags_rooms(tmp_path):
+    from head.server.memory import MemoryStore
+
+    class Resp:
+        content = [type("B", (), {"type": "text", "text": '{"summary": "kitchen chat", "facts": []}'})()]
+
+    class LLM:
+        prompts = []
+
+        class messages:
+            @staticmethod
+            async def create(**kw):
+                LLM.prompts.append(kw["messages"][0]["content"])
+                return Resp()
+
+    m = MemoryStore(tmp_path / "d")
+    m.log("e1", "heard", "one", "kitchen")
+    assert not await m.summarize(LLM, "x", "e1")  # needs two
+    m.log("e1", "heard", "two", "kitchen")
+    assert await m.summarize(LLM, "x", "e1")
+    assert "heard [kitchen]: one" in LLM.prompts[0]

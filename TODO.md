@@ -1,5 +1,13 @@
 # TODO
 
+## Simulator: conversations and seeking (first version done, see README)
+- [ ] Measure it: score whether droid replies to lone speakers (ground truth is in `Group.solo`) and stays out of private chat; log per-encounter stats
+- [ ] Recall check: ask droid in room two what it heard or said in room one and compare with the transcript
+- [ ] People that move between rooms, walk away mid-conversation, or leave droid hanging
+- [ ] Sim people as LIDAR obstacles (nimbus `raycast`) so droid can't drive through them
+- [ ] Replace the line-of-sight "sight" cue with the real camera detector (Vision section below)
+- [ ] Optional: synthesised audio of the people through the real mic path, to exercise `music.js` / media detection
+
 ## Vision: on-robot object detection (text only, no images leave the robot)
 Jetson runs a detector and feeds short text descriptions to Claude / the voice model, for privacy.
 - [ ] Confirm hardware: Jetson model (Nano 4GB vs 2GB) and camera (USB vs CSI)
@@ -55,6 +63,6 @@ Today's `music.js` (opt-in `?music=1`) only sees beat in post-AEC/NS/AGC audio, 
 - [ ] Add API keys to `.env` and test the voice flow on desktop Chrome, then iPhone (verify Grok token response shape and Gemini setup field names)
 - [ ] Idle timeout and session-minutes counter to limit voice billing
 - [ ] Gemini 2.5 native-audio model if the silent wait during `ask_claude` is a problem
-- [ ] Deploy to the Jetson: clone droid, `.env` on the robot, systemd service, Tailscale Serve
+- [ ] Deploy to the Jetson: `deploy/install.sh` written (untested: Jetson was off); clone droid, scp `.env`, run it, then confirm `NIMBUS_URL` and that the phone connects
 - [ ] `mount/` OpenSCAD phone mount over the LIDAR turret (from `neato_d4.scad`)
 - [ ] Nimbus side: face/event endpoint; LIDAR blocked-sector mask for mount posts and camera
