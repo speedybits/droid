@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import time
 import uuid
 import wave
 from contextlib import asynccontextmanager
@@ -248,6 +249,25 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
     async def sim_world():
         return await app.state.nimbus.sim_world()
 
+    @app.post("/sim/hear")
+    async def sim_hear(body: dict):
+        """The laptop mic heard droid's voice (from the phone): groups within hearing range react to it."""
+        sk = app.state.seeker
+        if sk is None:
+            raise HTTPException(404, "seeker is off")
+        text = str(body.get("text", "")).strip()[:300]
+        if not text:
+            raise HTTPException(400, "text required")
+        try:
+            st = await app.state.nimbus.sim_state()
+            sk.people.update_droid(st["x"], st["y"])
+        except Exception:
+            pass
+        n = sk.people.hear_droid(text)
+        app.state.mic = (text, n, time.time())
+        logging.getLogger("head").info("mic heard droid (%d group(s) in range): %s", n, text)
+        return {"heard_by": n}
+
     @app.get("/sim/people")
     async def sim_people():
         """Everything the people view draws: pose, people, speech bubbles, droid's bubble and state."""
@@ -263,6 +283,8 @@ def create_app(agent: ClaudeAgent | None = None, nimbus: NimbusClient | None = N
         snap = sk.people.snapshot()
         snap["pose"] = pose
         snap["seeker"] = sk.snapshot()
+        mic = getattr(app.state, "mic", None)
+        snap["mic"] = {"text": mic[0], "heard_by": mic[1]} if mic and time.time() - mic[2] < 10 else None
         snap["tokens"] = {"sim": sk.people.tokens, "droid": sk.tokens}
         ve = app.state.voice_error
         snap["voice_error"] = ve[0] if ve and datetime.now(timezone.utc).timestamp() - ve[1] < 15 else None

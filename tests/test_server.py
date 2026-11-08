@@ -133,3 +133,40 @@ def test_tts_validates_input_and_needs_key(monkeypatch):
         assert c.post("/tts", json={"text": ""}).status_code == 400
         assert c.post("/tts", json={"text": "hi", "voice": "Nope"}).status_code == 400
         assert c.post("/tts", json={"text": "hi", "voice": "Kore"}).status_code == 500
+
+
+def test_mic_hear_reaches_only_groups_in_range():
+    import asyncio
+    import random
+
+    from head.sim.people import Group, PeopleSim, Person
+    from conftest import four_rooms_world
+
+    class NimbusSim(FakeNimbus):
+        async def sim_state(self):
+            return {"x": 1.0, "y": 1.0, "theta": 0.0}
+
+    class FakeSeeker:
+        state, tokens, on_say, on_face = "seek", 0, None, None
+
+        def __init__(self):
+            self.people = PeopleSim(four_rooms_world(), rng=random.Random(1))
+            self.people.groups = [Group(1, "kitchen", [Person("A", "x", 1.4, 1.0)], solo=True),
+                                  Group(2, "kitchen", [Person("B", "x", 3.5, 3.5)], solo=True)]
+
+            async def idle(interval=0.25):
+                await asyncio.sleep(3600)
+            self.people.run = idle
+
+        async def run(self):
+            await asyncio.sleep(3600)
+
+        def snapshot(self):
+            return {"state": "seek", "paused": False, "room": "", "pose": (1, 1, 0)}
+
+    sk = FakeSeeker()
+    with TestClient(create_app(FakeAgent(), NimbusSim(), seeker=sk)) as c:
+        assert c.post("/sim/hear", json={"text": " "}).status_code == 400
+        assert c.post("/sim/hear", json={"text": "Hello there, how are you?"}).json() == {"heard_by": 1}
+        assert sk.people.groups[0].reacting and not sk.people.groups[1].reacting
+        assert c.get("/sim/people").json()["mic"] == {"text": "Hello there, how are you?", "heard_by": 1}

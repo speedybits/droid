@@ -89,9 +89,8 @@ function draw() {
     ctx.moveTo(x, y); ctx.lineTo(x + r * 1.4 * Math.cos(-pose.theta), y + r * 1.4 * Math.sin(-pose.theta)); ctx.stroke();
   }
   ctx.textAlign = "left";
-  const reveal = $("reveal").checked;
   for (const b of snap.bubbles) { // droid hears only within the ring; out of range the bubble says so
-    const text = b.heard || reveal ? b.text : "<too far away to hear>";
+    const text = b.heard ? b.text : "<too far away to hear>";
     bubble(v, v.px(b.x), v.py(b.y), text, b.heard ? "#caf7d4" : "#f1f3f8", b.heard ? "#34c759" : "#8b93a7", 14);
   }
 }
@@ -99,28 +98,57 @@ function draw() {
 // Chrome's built-in voices read the people's lines aloud (no API, no cost). Each person gets a stable voice/pitch
 // from their name. Needs one user gesture, so it's behind a checkbox.
 const spoken = new Set();
+const recentSpoken = [], peopleSpeech = []; // lines + [start,end] times the laptop speakers were playing people
 let armed = false; // Chrome only speaks after one click on the page
-addEventListener("pointerdown", () => { armed = true; $("hint").textContent = ""; speechSynthesis.getVoices(); }, { once: true });
+addEventListener("pointerdown", () => { armed = true; $("hint").textContent = ""; speechSynthesis.getVoices(); startMic(); }, { once: true });
+
+// The laptop mic hears droid's voice from the phone. Anything the speakers were playing (the people) is dropped:
+// by time (the sound overlapped a person talking) and by text (it matches a line we just spoke).
+const words = (t) => t.toLowerCase().match(/[a-z']+/g) || [];
+function echoOf(text) {
+  const w = words(text); if (!w.length) return true;
+  return recentSpoken.some((l) => { const lw = new Set(words(l)); return w.filter((x) => lw.has(x)).length / w.length >= 0.6; });
+}
+let rec = null, spanStart = 0, spanEnd = 0;
+function startMic() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { $("hint").textContent = "this browser has no speech recognition (use Chrome)"; return; }
+  if (!$("mic").checked || rec) return;
+  rec = new SR(); rec.continuous = true; rec.interimResults = false; rec.lang = "en-US";
+  rec.onspeechstart = () => { spanStart = performance.now(); spanEnd = Infinity; };
+  rec.onspeechend = () => { spanEnd = performance.now(); };
+  rec.onresult = (e) => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (!e.results[i].isFinal) continue;
+      const text = e.results[i][0].transcript.trim(), a = spanStart, z = Math.min(spanEnd, performance.now());
+      const overlapped = speechSynthesis.speaking || peopleSpeech.some(([s, t]) => s < z + 300 && t + 300 > a);
+      if (!text || overlapped || echoOf(text)) continue;
+      fetch("/sim/hear", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }).catch(() => {});
+    }
+  };
+  rec.onerror = (e) => { if (e.error !== "no-speech" && e.error !== "aborted") $("hint").textContent = `mic: ${e.error}`; };
+  rec.onend = () => { const r = rec; rec = null; if ($("mic").checked) setTimeout(startMic, 300); void r; };
+  try { rec.start(); } catch { rec = null; }
+}
+$("mic").addEventListener("change", () => { if ($("mic").checked) startMic(); else { const r = rec; rec = null; r?.abort(); } });
 function sayAloud(b) {
   if (!b.heard) return; // only people within droid's hearing range
   const key = `${b.gid}|${b.name}|${b.text}`;
   if (spoken.has(key)) return;
   spoken.add(key); if (spoken.size > 200) spoken.delete(spoken.values().next().value);
-  if (!$("speak").checked || !("speechSynthesis" in window)) return;
+  if (!("speechSynthesis" in window)) return;
   if (!armed) { $("hint").textContent = "click anywhere so Chrome will let me speak"; return; }
   if (speechSynthesis.pending) return; // don't build up a backlog of stale lines
   let h = 0; for (const c of b.name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   const voices = speechSynthesis.getVoices().filter((v) => v.lang.startsWith("en"));
   const u = new SpeechSynthesisUtterance(b.text);
+  recentSpoken.push(b.text); if (recentSpoken.length > 12) recentSpoken.shift();
+  u.onstart = () => { peopleSpeech.push([performance.now(), Infinity]); };
+  u.onend = u.onerror = () => { const iv = peopleSpeech.at(-1); if (iv && iv[1] === Infinity) iv[1] = performance.now(); };
   if (voices.length) u.voice = voices[h % voices.length];
   u.pitch = 0.8 + ((h >> 3) % 9) * 0.05; u.rate = 1.05;
   speechSynthesis.speak(u);
 }
-try { $("speak").checked = localStorage.getItem("people.speak") !== "0"; } catch { $("speak").checked = true; }
-$("speak").addEventListener("change", () => {
-  try { localStorage.setItem("people.speak", $("speak").checked ? "1" : "0"); } catch {}
-  if (!$("speak").checked) speechSynthesis.cancel(); else speechSynthesis.getVoices();
-});
 
 async function poll() {
   try {
@@ -135,6 +163,7 @@ async function poll() {
     const sk = snap.seeker;
     $("state").textContent = `droid: ${sk.paused ? "paused" : sk.state}`;
     $("room").textContent = dr?.room ? `in the ${dr.room}` : "";
+    $("heard").textContent = snap.mic ? `droid said: "${snap.mic.text}" (${snap.mic.heard_by} group${snap.mic.heard_by === 1 ? "" : "s"} in range)` : "";
     $("err").textContent = snap.voice_error ? `voice error: ${snap.voice_error}` : "";
     $("tok").textContent = `tokens  sim ${snap.tokens.sim}  droid ${snap.tokens.droid}`;
   } catch { $("state").textContent = "head server unreachable"; }
