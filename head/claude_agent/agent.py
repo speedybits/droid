@@ -16,6 +16,9 @@ with the tools and then reply with ONE or TWO short sentences describing what ha
 voice assistant will say aloud. Rules:
 - Look before you move: call scan first unless you just did. Prefer short moves (<= 0.5 m) and re-scan.
 - Never move more than 2 m in one call. Obstacles stop motion automatically; report it honestly.
+- If a move or turn result has "bumped": true (result "bumper"), the robot touched something with the listed
+  bumper zone(s), stopped, and backed away a little. It did NOT finish the move: say what it bumped into and on
+  which side, and scan before trying again; never repeat the same move blindly.
 - Use speak_status only for long tasks, to give a brief progress line.
 - If asked to stop, call stop immediately. If a request is unsafe or unclear, say so instead of moving.
 - Positive turn degrees = left (counter-clockwise), negative = right. Positive distance = forward."""
