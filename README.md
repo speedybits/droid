@@ -68,3 +68,17 @@ Memory: lines go to `data/transcripts/` tagged with the room (`heard` = overhear
 prompt includes the recent lines from every room, so it can bring up room one in room two. The phone voice flow pauses the
 seeker while a request is running, and STOP pauses it for 20 s.
 Without `ANTHROPIC_API_KEY` the people use scripted lines and droid listens but does not speak. `LOG_LEVEL=DEBUG` for more logs.
+
+## Jetson (Nano 2GB on the robot)
+Reach it with `ssh mike@mike-jetson.local` (mDNS). JetPack 4.6 / Ubuntu 18.04; system Python is 3.6, but a source-built
+Python 3.10 lives in `/usr/local/bin` and is what both nimbus (`~/projects/nimbus-env`) and droid (`.venv`) use. No `uv` needed.
+Two systemd services, both started on boot:
+- `nimbus.service`: `nimbus run --transport neato` on `/dev/ttyACM0`, REST on :8080 (`deploy/nimbus.service`).
+- `droid.service`: head server on 127.0.0.1:8443 (`deploy/droid.service`), `NIMBUS_URL=http://localhost:8080` in the Jetson's `.env`.
+- Tailscale (`tailscale serve`) puts HTTPS in front of it for the phone: `https://droid.<tailnet>.ts.net` (tailnet only).
+
+Set up with `deploy/install-nimbus.sh` and `deploy/install.sh` (both need sudo, so run them from a real terminal with
+`ssh -t`; `ssh -t` fails from a shell with no TTY). Copy `.env` with `scp` and never print it. Don't `git pull` in
+`~/projects/nimbus` on the Jetson without checking for local edits.
+Update droid: `ssh mike@mike-jetson.local 'cd ~/projects/droid && git pull'`, then `sudo systemctl restart droid`.
+Logs: `journalctl -u droid -f`, `journalctl -u nimbus -f`.

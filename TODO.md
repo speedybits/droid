@@ -10,7 +10,7 @@
 
 ## Vision: on-robot object detection (text only, no images leave the robot)
 Jetson runs a detector and feeds short text descriptions to Claude / the voice model, for privacy.
-- [ ] Confirm hardware: Jetson model (Nano 4GB vs 2GB) and camera (USB vs CSI)
+- [ ] Confirm camera (USB vs CSI); the Jetson is a Nano 2GB (no `/dev/video*` yet)
 - [ ] Detector service under system Python 3.6 (JetPack `jetson-inference`, SSD-MobileNet / COCO); writes latest detections as JSON on localhost (the nimbus venv is 3.10, so keep it a separate process)
 - [ ] `see` tool in `head/claude_agent/agent.py`: returns e.g. `person (center, 1.4 m), ball (right, 0.8 m)`, with confidence
 - [ ] Fuse camera bearing with LIDAR range at that angle; calibrate camera FOV and alignment to the LIDAR zero angle (ball at known angles)
@@ -63,6 +63,7 @@ Today's `music.js` (opt-in `?music=1`) only sees beat in post-AEC/NS/AGC audio, 
 - [ ] Add API keys to `.env` and test the voice flow on desktop Chrome, then iPhone (verify Grok token response shape and Gemini setup field names)
 - [ ] Idle timeout and session-minutes counter to limit voice billing
 - [ ] Gemini 2.5 native-audio model if the silent wait during `ask_claude` is a problem
-- [ ] Deploy to the Jetson: `deploy/install.sh` written (untested: Jetson was off); clone droid, scp `.env`, run it, then confirm `NIMBUS_URL` and that the phone connects
+- [x] Deploy to the Jetson: done 2026-11-09 (droid + nimbus as systemd services, Tailscale HTTPS, phone voice session and an API move/stop on the wheels verified). See README "Jetson"
+- [ ] Voice-driven move/stop/disconnect-watchdog test on the real robot, then a reboot test of all three services
 - [ ] `mount/` OpenSCAD phone mount over the LIDAR turret (from `neato_d4.scad`)
 - [ ] Nimbus side: face/event endpoint; LIDAR blocked-sector mask for mount posts and camera
