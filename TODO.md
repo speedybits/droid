@@ -64,6 +64,6 @@ Today's `music.js` (opt-in `?music=1`) only sees beat in post-AEC/NS/AGC audio, 
 - [ ] Idle timeout and session-minutes counter to limit voice billing
 - [ ] Gemini 2.5 native-audio model if the silent wait during `ask_claude` is a problem
 - [x] Deploy to the Jetson: done 2026-11-09 (droid + nimbus as systemd services, Tailscale HTTPS, phone voice session and an API move/stop on the wheels verified). See README "Jetson"
-- [ ] Voice-driven move/stop/disconnect-watchdog test on the real robot, then a reboot test of all three services
+- [x] Voice-driven move/stop/disconnect-watchdog test on the real robot, and reboot test of all services (2026-11-09)
 - [ ] `mount/` OpenSCAD phone mount over the LIDAR turret (from `neato_d4.scad`)
 - [ ] Nimbus side: face/event endpoint; LIDAR blocked-sector mask for mount posts and camera
