@@ -1,0 +1,15 @@
+[Unit]
+Description=Droid head server (phone face + voice bridge)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/.venv/bin/uvicorn head.server.app:app --host 127.0.0.1 --port 8443
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
