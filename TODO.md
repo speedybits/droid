@@ -67,3 +67,6 @@ Today's `music.js` (opt-in `?music=1`) only sees beat in post-AEC/NS/AGC audio, 
 - [x] Voice-driven move/stop/disconnect-watchdog test on the real robot, and reboot test of all services (2026-11-09)
 - [ ] `mount/` OpenSCAD phone mount over the LIDAR turret (from `neato_d4.scad`)
 - [ ] Nimbus side: face/event endpoint; LIDAR blocked-sector mask for mount posts and camera
+- [x] Bumpers on the real robot (2026-11-09): all four zones verified, nimbus recovery (stop, back up 1 s, turn away) works, and `/api/claude/move`/`turn` now return `bumped` + `bumper_zones` (result `bumper`) so the voice agent reports a hit; verified from the phone. nimbus PR #6 (`bumped-result`)
+- [ ] After nimbus PR #6 merges: reset the Jetson's `~/projects/nimbus` onto `neato` (it currently runs patched, uncommitted code), and check `/api/claude/scan` headings for a double LIDAR-orientation correction
+- [ ] Bumper follow-ups: a bump early in a long closed-loop (odometry) move, bumping while turning, and recovery when the bumper stays held (it retriggers); nimbus state shows `NAVIGATING` after recovery instead of returning to `IDLE`
