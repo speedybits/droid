@@ -1,6 +1,6 @@
 [Unit]
 Description=Droid head server (phone face + voice bridge)
-After=network-online.target
+After=network-online.target nimbus.service
 Wants=network-online.target
 
 [Service]
